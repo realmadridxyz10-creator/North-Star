@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'tests/r4_readonly_uat.py'
+      - 'tests/r4_identity_uat.py'
       - '.github/workflows/r4-readonly-uat.yml'
   workflow_dispatch:
 
@@ -21,5 +22,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Execute R4 external UAT
+      - name: Execute R4 read-only UAT
         run: python tests/r4_readonly_uat.py
+      - name: Execute R4 identity UAT
+        run: python tests/r4_identity_uat.py
