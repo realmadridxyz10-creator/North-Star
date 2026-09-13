@@ -1,0 +1,57 @@
+name: North Star CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+      - name: Compile bootstrap entry point
+        run: python -m py_compile app/bootstrap.py
+      - name: Validate governed corpus
+        run: |
+          test "$(wc -l < data/search_records.jsonl)" -eq 1140
+          test "$(wc -l < data/retrieval_chunks.jsonl)" -eq 1502
+      - name: Import runtime
+        env:
+          NS_SESSION_SECRET: github-actions-ci-only
+        run: python -c "from app.bootstrap import app; assert app is not None"
+      - name: Start runtime
+        env:
+          NS_SESSION_SECRET: github-actions-ci-only
+        run: |
+          uvicorn app.bootstrap:app --host 127.0.0.1 --port 8000 > /tmp/north-star.log 2>&1 &
+          echo $! > /tmp/north-star.pid
+          for i in {1..20}; do curl -fsS http://127.0.0.1:8000/api/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8000/api/health
+      - name: Smoke-test core runtime
+        run: |
+          curl -fsS http://127.0.0.1:8000/ > /dev/null
+          curl -fsS 'http://127.0.0.1:8000/api/search?q=governance' > /dev/null
+          curl -fsS 'http://127.0.0.1:8000/api/compass?dimension=BUILD' > /dev/null
+          curl -fsS http://127.0.0.1:8000/assistant > /dev/null
+          curl -fsS http://127.0.0.1:8000/account > /dev/null
+          curl -fsS http://127.0.0.1:8000/api/auth/status > /dev/null
+          curl -fsS http://127.0.0.1:8000/api/commerce/plans > /dev/null
+          code=$(curl -sS -o /tmp/entitlements.json -w '%{http_code}' http://127.0.0.1:8000/api/entitlements/me)
+          test "$code" = "401"
+      - name: Show runtime log on failure
+        if: failure()
+        run: cat /tmp/north-star.log || true
