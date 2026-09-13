@@ -24,7 +24,7 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r requirements.txt
       - name: Compile bootstrap entry point
-        run: python -m py_compile app/bootstrap.py
+        run: python -m py_compile app/main.py
       - name: Validate governed corpus
         run: |
           test "$(wc -l < data/search_records.jsonl)" -eq 1140
@@ -32,12 +32,12 @@ jobs:
       - name: Import runtime
         env:
           NS_SESSION_SECRET: github-actions-ci-only
-        run: python -c "from app.bootstrap import app; assert app is not None"
+        run: python -c "from app.main import app; assert app is not None"
       - name: Start runtime
         env:
           NS_SESSION_SECRET: github-actions-ci-only
         run: |
-          uvicorn app.bootstrap:app --host 127.0.0.1 --port 8000 > /tmp/north-star.log 2>&1 &
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/north-star.log 2>&1 &
           echo $! > /tmp/north-star.pid
           for i in {1..20}; do curl -fsS http://127.0.0.1:8000/api/health && break; sleep 1; done
           curl -fsS http://127.0.0.1:8000/api/health
