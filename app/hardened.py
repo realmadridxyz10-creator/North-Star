@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
+import uuid
 from fastapi import Request
 from app import main as baseline
 
 app = baseline.app
 
-# Controlled R4 hardening overlay.
+# Controlled R4 hardening + observability overlay.
 # Keeps the DEV-006 baseline intact while applying stricter external-UAT controls.
 
 _POLICY_ATTACK_PATTERNS = [
@@ -36,6 +40,60 @@ def hardened_classify_question(q: str) -> str:
 if not hasattr(baseline, "_baseline_classify_question"):
     baseline._baseline_classify_question = baseline.classify_question
 baseline.classify_question = hardened_classify_question
+
+
+OBSERVABILITY_IDENTITY = {
+    "release": baseline.RELEASE,
+    "runtime_overlay": "R4_HARDENED_OBSERVABILITY",
+    "source_release_identity": "R4/B1",
+    "service": os.environ.get("RAILWAY_SERVICE_NAME", "north-star-uat-r4"),
+    "environment": os.environ.get("RAILWAY_ENVIRONMENT_NAME", "external-uat"),
+    "production_authorized": False,
+}
+
+
+@app.get("/api/observability/status")
+def observability_status():
+    return {
+        "status": "ok",
+        **OBSERVABILITY_IDENTITY,
+        "controls": {
+            "request_id": True,
+            "server_timing": True,
+            "structured_request_log": True,
+            "railway_resource_metrics": True,
+            "railway_deploy_logs": True,
+            "alert_delivery_proven": False,
+        },
+    }
+
+
+@app.middleware("http")
+async def r4_observability(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        if 'response' in locals():
+            response.headers["X-Request-ID"] = request_id
+            response.headers["Server-Timing"] = f"app;dur={duration_ms}"
+            response.headers["X-North-Star-Release"] = baseline.RELEASE
+        event = {
+            "event": "http_request",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": status_code,
+            "duration_ms": duration_ms,
+            "release": baseline.RELEASE,
+            "runtime_overlay": "R4_HARDENED_OBSERVABILITY",
+        }
+        print(json.dumps(event, separators=(",", ":")), flush=True)
 
 
 @app.middleware("http")
