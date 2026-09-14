@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'app/paypal_sandbox_client.py'
+      - 'app/paypal_sandbox_runtime.py'
       - 'tests/test_paypal_sandbox_client.py'
       - '.github/workflows/r4-paypal-sandbox-preflight.yml'
   workflow_dispatch:
@@ -23,10 +24,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile PayPal Sandbox adapter
-        run: python -m py_compile app/paypal_sandbox_client.py
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+      - name: Compile PayPal Sandbox components
+        run: python -m py_compile app/paypal_sandbox_client.py app/paypal_sandbox_runtime.py
       - name: Run PayPal Sandbox adapter tests
         run: python -m unittest -v tests.test_paypal_sandbox_client
+      - name: Import wrapped runtime
+        env:
+          NS_SESSION_SECRET: github-actions-paypal-preflight-only
+        run: python -c "from app.paypal_sandbox_runtime import app; assert app is not None"
       - name: Confirm safe unconfigured fallback
         run: |
           python - <<'PY'
