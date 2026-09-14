@@ -1,0 +1,26 @@
+name: R4 Observability External UAT
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/r4_observability_uat.py'
+      - '.github/workflows/r4_observability_uat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observability-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run live R4 observability UAT
+        run: python tests/r4_observability_uat.py
