@@ -1,0 +1,25 @@
+name: R4 External Performance Assurance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/r4_external_performance.py'
+      - '.github/workflows/r4-external-performance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute R4 external performance benchmark
+        run: python tests/r4_external_performance.py
