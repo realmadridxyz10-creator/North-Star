@@ -1,0 +1,40 @@
+name: R4 PayPal Sandbox Preflight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/paypal_sandbox_client.py'
+      - 'tests/test_paypal_sandbox_client.py'
+      - '.github/workflows/r4-paypal-sandbox-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paypal-sandbox-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile PayPal Sandbox adapter
+        run: python -m py_compile app/paypal_sandbox_client.py
+      - name: Run PayPal Sandbox adapter tests
+        run: python -m unittest -v tests.test_paypal_sandbox_client
+      - name: Confirm safe unconfigured fallback
+        run: |
+          python - <<'PY'
+          from app.paypal_sandbox_client import sandbox_status
+          s = sandbox_status()
+          assert s['runtime'] == 'PAYPAL_SIMULATOR'
+          assert s['sandbox_credentials_configured'] is False
+          assert s['production_authorized'] is False
+          print('R4 PayPal Sandbox preflight PASS')
+          print(s)
+          PY
