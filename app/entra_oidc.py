@@ -50,7 +50,9 @@ class EntraOIDCClient:
     user/session/entitlement layer remains the authorization authority.
     """
 
-    SCOPES = ["openid", "profile", "email"]
+    # MSAL automatically adds reserved OIDC scopes such as openid/profile.
+    # Only application-requested non-reserved scopes belong here.
+    SCOPES = ["email"]
 
     def __init__(self, config: EntraOIDCConfig):
         self.config = config
