@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import msal
 
@@ -23,6 +24,16 @@ class EntraOIDCConfig:
     def authority(self) -> str:
         # Microsoft Entra External ID customer tenants use the CIAM authority.
         return f"https://{self.tenant_subdomain}.ciamlogin.com/{self.tenant_id}"
+
+    @property
+    def logout_endpoint(self) -> str:
+        # External-tenant OIDC end-session endpoint. The tenant's verified
+        # onmicrosoft.com domain is required in the CIAM logout path.
+        tenant_domain = f"{self.tenant_subdomain}.onmicrosoft.com"
+        return (
+            f"https://{self.tenant_subdomain}.ciamlogin.com/"
+            f"{tenant_domain}/oauth2/v2.0/logout"
+        )
 
     @classmethod
     def from_env(cls) -> "EntraOIDCConfig | None":
@@ -64,10 +75,20 @@ class EntraOIDCClient:
 
     def begin_login(self) -> dict[str, Any]:
         # MSAL creates and later validates the auth-code flow state/nonce data.
+        # Explicit account selection prevents an existing Entra browser SSO
+        # session from silently choosing a customer identity for North Star.
         return self._client.initiate_auth_code_flow(
             scopes=self.SCOPES,
             redirect_uri=self.config.redirect_uri,
+            prompt="select_account",
         )
+
+    def logout_url(self, post_logout_redirect_uri: str | None = None) -> str:
+        params: dict[str, str] = {}
+        if post_logout_redirect_uri:
+            params["post_logout_redirect_uri"] = post_logout_redirect_uri
+        query = urlencode(params)
+        return self.config.logout_endpoint + (f"?{query}" if query else "")
 
     def complete_login(
         self, flow: dict[str, Any], auth_response: dict[str, str]
