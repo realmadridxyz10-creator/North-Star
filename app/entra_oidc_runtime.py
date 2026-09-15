@@ -312,27 +312,52 @@ def auth_status(request: Request):
     }
 
 
-@app.post("/api/auth/entra/logout")
-def entra_logout(request: Request):
+def _managed_logout_response(request: Request, audit_event: str) -> RedirectResponse:
     user = baseline.current_user(request)
     revoked = _revoke_request_session(request)
     if user:
-        baseline.audit("identity.entra_logout", {"server_session_revoked": revoked}, user["user_id"])
-    response = RedirectResponse("/account", status_code=303)
-    response.delete_cookie(baseline.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+        baseline.audit(
+            audit_event,
+            {"server_session_revoked": revoked, "entra_end_session_requested": True},
+            user["user_id"],
+        )
+
+    cfg = _config()
+    # Return to the public Account page after Entra has ended its browser SSO
+    # session. This exact URI must be registered on the Entra app registration.
+    post_logout_uri = str(request.base_url).rstrip("/") + "/account"
+    logout_uri = EntraOIDCClient(cfg).logout_url(post_logout_uri)
+    response = RedirectResponse(logout_uri, status_code=303)
+    response.delete_cookie(
+        baseline.SESSION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
     response.delete_cookie(OIDC_FLOW_COOKIE, path="/")
     return response
+
+
+@app.post("/api/auth/entra/logout")
+def entra_logout(request: Request):
+    return _managed_logout_response(request, "identity.entra_logout")
 
 
 @app.post("/api/auth/logout")
 def logout(request: Request):
     user = baseline.current_user(request)
     managed = bool(user and user.get("provider") == MANAGED_IDENTITY_PROVIDER)
-    revoked = _revoke_request_session(request) if managed else False
     if managed:
-        baseline.audit("identity.logout", {"server_session_revoked": revoked}, user["user_id"])
+        return _managed_logout_response(request, "identity.logout")
     response = RedirectResponse("/account", status_code=303)
-    response.delete_cookie(baseline.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+    response.delete_cookie(
+        baseline.SESSION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
     return response
 
 
