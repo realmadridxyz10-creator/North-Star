@@ -101,12 +101,19 @@ async def r4_security_hardening(request: Request, call_next):
     response = await call_next(request)
 
     # External UAT is HTTPS-only at Railway. Harden cookies issued by the DEV identity simulator.
+    # Managed OIDC is the deliberate exception on the authorization callback: the browser is
+    # returning from the cross-site Entra authority, so the newly issued North Star session
+    # cookie must be SameSite=Lax for the immediate top-level redirect to /account to carry it.
+    # The cookie remains HttpOnly + Secure and authorization remains server-side/revocation-aware.
     set_cookie = response.headers.get("set-cookie")
     if set_cookie and baseline.SESSION_COOKIE in set_cookie:
         hardened = set_cookie
         if "secure" not in hardened.lower():
             hardened += "; Secure"
-        hardened = re.sub(r"SameSite=lax", "SameSite=Strict", hardened, flags=re.IGNORECASE)
+        if request.url.path == "/api/auth/entra/callback":
+            hardened = re.sub(r"SameSite=Strict", "SameSite=lax", hardened, flags=re.IGNORECASE)
+        else:
+            hardened = re.sub(r"SameSite=lax", "SameSite=Strict", hardened, flags=re.IGNORECASE)
         response.headers["set-cookie"] = hardened
 
     # Additional transport/browser protections for the external UAT edge.
