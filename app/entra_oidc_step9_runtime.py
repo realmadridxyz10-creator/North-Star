@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Stage 5.3 Step 9 UAT overlay.
 
-Adds portal-wide authentication-state visibility and immediate logout feedback
-without changing the managed identity, entitlement, or production-authorization
-contracts in the underlying Entra runtime.
+Adds portal-wide authentication-state visibility, immediate logout feedback,
+and customer-readable entitlement presentation without changing the managed
+identity, entitlement, or production-authorization contracts in the underlying
+Entra runtime.
 """
 
 import os
@@ -21,6 +22,9 @@ _AUTH_UX_STYLE = """
 .ns-auth-state.authenticated{border-color:#c7a45a;color:#f0d58f}
 .ns-auth-state.anonymous{color:#d9e2e8}
 .ns-auth-state a{color:inherit;text-decoration:none;margin:0}
+.ns-access-status{margin-top:14px;padding:14px 16px;border:1px solid #d8d1c4;border-radius:8px;background:#fbfaf7}
+.ns-access-status strong{display:block;margin-bottom:4px;color:#09263a}
+.ns-access-status span{color:#52616b;font-size:.92rem;line-height:1.45}
 @media(max-width:900px){.ns-auth-state{margin-left:10px}}
 </style>
 """
@@ -44,6 +48,34 @@ _AUTH_UX_SCRIPT = """
   function escapeHtml(v){
     return String(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
   }
+
+  // Account UX: preserve the server-side entitlement authority while replacing
+  // implementation-level JSON with a customer-readable access summary.
+  document.querySelectorAll('.account-panel h3').forEach(function(heading){
+    if(heading.textContent.trim()!=='Effective entitlement') return;
+    const raw=heading.nextElementSibling;
+    if(!raw || raw.tagName!=='PRE') return;
+    try{
+      const ent=JSON.parse(raw.textContent||'{}');
+      const paid=Boolean(ent.full_portal || ent.module || ent.premium_ai);
+      const preview=Boolean(ent.preview);
+      heading.textContent='Access status';
+      const box=document.createElement('div');
+      box.className='ns-access-status';
+      if(paid){
+        box.innerHTML='<strong>Access enabled</strong><span>Your North Star access is active according to the server-verified entitlement record.</span>';
+      }else if(preview){
+        box.innerHTML='<strong>Preview access</strong><span>You currently have preview access. Additional content becomes available when the corresponding entitlement is activated.</span>';
+      }else{
+        box.innerHTML='<strong>No active product access</strong><span>Your identity is verified, but no product entitlement is currently active.</span>';
+      }
+      raw.replaceWith(box);
+    }catch(e){
+      heading.textContent='Access status';
+      raw.textContent='Access information is temporarily unavailable.';
+    }
+  });
+
   fetch('/api/auth/status',{credentials:'same-origin',cache:'no-store'})
     .then(function(r){return r.json();}).then(setState)
     .catch(function(){if(state) state.textContent='Account';});
