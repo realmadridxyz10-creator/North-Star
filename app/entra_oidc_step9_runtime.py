@@ -3,18 +3,43 @@ from __future__ import annotations
 """Stage 5.3 Step 9 UAT overlay.
 
 Adds portal-wide authentication-state visibility, immediate logout feedback,
-and customer-readable entitlement presentation without changing the managed
-identity, entitlement, or production-authorization contracts in the underlying
-Entra runtime.
+customer-readable entitlement presentation, and managed-session idle timeout
+hardening without changing the identity, entitlement, or production-
+authorization contracts in the underlying Entra runtime.
 """
 
 import os
+import time
 
 from fastapi import Request
 
+from app import entra_oidc_runtime as entra_runtime
 from app.entra_oidc_runtime import app, baseline
 
 _ORIGINAL_LAYOUT = baseline.layout
+SESSION_IDLE_MAX_AGE = 1800  # 30 minutes
+
+
+def _init_managed_session_activity() -> None:
+    """Add activity tracking to the existing managed-session store safely.
+
+    Existing live UAT sessions receive a deployment-time activity baseline so a
+    rollout does not revoke them merely because they pre-date this column. New
+    sessions start tracking on their first authenticated North Star request.
+    """
+    c = baseline.db()
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(managed_sessions)").fetchall()}
+    if "last_activity_at" not in columns:
+        c.execute("ALTER TABLE managed_sessions ADD COLUMN last_activity_at INTEGER")
+    c.execute(
+        "UPDATE managed_sessions SET last_activity_at=? WHERE revoked_at IS NULL AND last_activity_at IS NULL",
+        (int(time.time()),),
+    )
+    c.commit()
+    c.close()
+
+
+_init_managed_session_activity()
 
 _AUTH_UX_STYLE = """
 <style>
@@ -108,16 +133,74 @@ def _step9_layout(title, body):
 baseline.layout = _step9_layout
 
 
-@app.middleware("http")
-async def step9_entra_logout_csp(request: Request, call_next):
-    """Permit the managed Entra end-session redirect after a same-origin form POST.
+def _enforce_managed_idle_timeout(request: Request) -> bool:
+    """Enforce a server-side sliding 30-minute idle limit.
 
-    R4 deliberately restricts form-action to 'self'. Edge applies that policy to
-    the 303 redirect target as well, so the logout POST reaches North Star and
-    revokes the server session but navigation to CIAM is blocked. Keep the
-    policy narrow by allowing only this tenant's CIAM host.
+    Returns True only when this request caused an idle-expired session to be
+    revoked. The underlying runtime continues to enforce its fixed 8-hour
+    expires_at boundary independently, so activity never extends that absolute
+    lifetime.
     """
+    session_id = entra_runtime._managed_session_id(request.cookies.get(baseline.SESSION_COOKIE))
+    if not session_id:
+        return False
+
+    now = int(time.time())
+    c = baseline.db()
+    row = c.execute(
+        "SELECT user_id,created_at,expires_at,revoked_at,last_activity_at FROM managed_sessions WHERE session_id=?",
+        (session_id,),
+    ).fetchone()
+    if not row or row["revoked_at"] is not None or row["expires_at"] <= now:
+        c.close()
+        return False
+
+    last_activity = row["last_activity_at"]
+    if last_activity is not None and now - last_activity >= SESSION_IDLE_MAX_AGE:
+        cur = c.execute(
+            "UPDATE managed_sessions SET revoked_at=? WHERE session_id=? AND revoked_at IS NULL",
+            (now, session_id),
+        )
+        c.commit()
+        revoked = cur.rowcount > 0
+        user_id = row["user_id"]
+        c.close()
+        if revoked:
+            baseline.audit(
+                "identity.managed_session_idle_timeout",
+                {
+                    "idle_timeout_seconds": SESSION_IDLE_MAX_AGE,
+                    "absolute_timeout_seconds": entra_runtime.SESSION_MAX_AGE,
+                    "server_session_revoked": True,
+                },
+                user_id,
+            )
+        return revoked
+
+    c.execute(
+        "UPDATE managed_sessions SET last_activity_at=? WHERE session_id=? AND revoked_at IS NULL",
+        (now, session_id),
+    )
+    c.commit()
+    c.close()
+    return False
+
+
+@app.middleware("http")
+async def step9_session_security_and_logout_csp(request: Request, call_next):
+    """Enforce managed-session inactivity and permit the Entra logout redirect."""
+    idle_expired = _enforce_managed_idle_timeout(request)
     response = await call_next(request)
+
+    if idle_expired:
+        response.delete_cookie(
+            baseline.SESSION_COOKIE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="strict",
+        )
+
     csp = response.headers.get("Content-Security-Policy", "")
     tenant_subdomain = os.environ.get("ENTRA_TENANT_SUBDOMAIN", "").strip()
     if csp and tenant_subdomain:
