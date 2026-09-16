@@ -3,15 +3,16 @@ from __future__ import annotations
 """Stage 5.3 Step 9 UAT overlay.
 
 Adds portal-wide authentication-state visibility, immediate logout feedback,
-customer-readable entitlement presentation, and managed-session idle timeout
-hardening without changing the identity, entitlement, or production-
-authorization contracts in the underlying Entra runtime.
+customer-readable entitlement presentation, managed-session idle timeout, and
+stable Entra identity-binding hardening without changing the entitlement or
+production-authorization contracts in the underlying Entra runtime.
 """
 
+import hashlib
 import os
 import time
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from app import entra_oidc_runtime as entra_runtime
 from app.entra_oidc_runtime import app, baseline
@@ -21,12 +22,7 @@ SESSION_IDLE_MAX_AGE = 1800  # 30 minutes
 
 
 def _init_managed_session_activity() -> None:
-    """Add activity tracking to the existing managed-session store safely.
-
-    Existing live UAT sessions receive a deployment-time activity baseline so a
-    rollout does not revoke them merely because they pre-date this column. New
-    sessions start tracking on their first authenticated North Star request.
-    """
+    """Add activity tracking to the existing managed-session store safely."""
     c = baseline.db()
     columns = {row["name"] for row in c.execute("PRAGMA table_info(managed_sessions)").fetchall()}
     if "last_activity_at" not in columns:
@@ -40,6 +36,78 @@ def _init_managed_session_activity() -> None:
 
 
 _init_managed_session_activity()
+
+
+def _stable_entra_user_id(tenant_id: str, subject: str) -> str:
+    """Derive the North Star managed user key only from verified Entra identity claims."""
+    stable = f"{tenant_id}:{subject}"
+    return "usr_entra_" + hashlib.sha256(stable.encode()).hexdigest()[:20]
+
+
+def _hardened_upsert_managed_user(identity: dict) -> dict:
+    """Bind managed users exclusively to verified Entra tenant + subject.
+
+    Email remains profile metadata and may change, but it can never select or
+    re-bind a North Star managed identity. A conflicting pre-existing email is
+    rejected instead of being adopted as the authenticated identity.
+    """
+    subject = str(identity.get("subject") or "").strip()
+    tenant_id = str(identity.get("tenant_id") or "").strip()
+    email = str(identity.get("email") or "").strip().lower()
+    display_name = str(identity.get("display_name") or "North Star Reader").strip()
+
+    if not subject:
+        raise HTTPException(401, "entra_oidc_subject_missing")
+    if not tenant_id:
+        raise HTTPException(401, "entra_oidc_tenant_missing")
+    if not email:
+        raise HTTPException(401, "entra_oidc_email_missing")
+
+    user_id = _stable_entra_user_id(tenant_id, subject)
+    now = int(time.time())
+    c = baseline.db()
+    existing_subject = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    existing_email = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+
+    if existing_subject:
+        # The stable external identity is authoritative. Prevent its profile
+        # email from colliding with any different North Star identity.
+        if existing_email and existing_email["user_id"] != user_id:
+            c.close()
+            baseline.audit(
+                "identity.entra_binding_conflict",
+                {"reason": "email_owned_by_different_user"},
+                user_id,
+            )
+            raise HTTPException(409, "entra_identity_binding_conflict")
+        c.execute(
+            "UPDATE users SET email=?,display_name=?,provider=? WHERE user_id=?",
+            (email, display_name, entra_runtime.MANAGED_IDENTITY_PROVIDER, user_id),
+        )
+    else:
+        # Never use email as an identity key. If the email already belongs to a
+        # different record, fail closed rather than silently migrating/rebinding.
+        if existing_email:
+            c.close()
+            baseline.audit(
+                "identity.entra_binding_conflict",
+                {"reason": "email_preexists_without_stable_subject_binding"},
+            )
+            raise HTTPException(409, "entra_identity_binding_conflict")
+        c.execute(
+            "INSERT INTO users VALUES(?,?,?,?,?)",
+            (user_id, email, display_name, entra_runtime.MANAGED_IDENTITY_PROVIDER, now),
+        )
+
+    c.commit()
+    row = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    c.close()
+    return dict(row)
+
+
+# Replace the temporary email-adoption behavior in the isolated Stage 5.3
+# runtime. The callback resolves this module attribute at request time.
+entra_runtime._upsert_managed_user = _hardened_upsert_managed_user
 
 _AUTH_UX_STYLE = """
 <style>
@@ -74,8 +142,6 @@ _AUTH_UX_SCRIPT = """
     return String(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
   }
 
-  // Account UX: preserve the server-side entitlement authority while replacing
-  // implementation-level JSON with a customer-readable access summary.
   document.querySelectorAll('.account-panel h3').forEach(function(heading){
     if(heading.textContent.trim()!=='Effective entitlement') return;
     const raw=heading.nextElementSibling;
@@ -128,19 +194,11 @@ def _step9_layout(title, body):
     return html
 
 
-# Existing portal routes call baseline.layout at request time, so this isolated
-# runtime overlay makes authentication state visible consistently across pages.
 baseline.layout = _step9_layout
 
 
 def _enforce_managed_idle_timeout(request: Request) -> bool:
-    """Enforce a server-side sliding 30-minute idle limit.
-
-    Returns True only when this request caused an idle-expired session to be
-    revoked. The underlying runtime continues to enforce its fixed 8-hour
-    expires_at boundary independently, so activity never extends that absolute
-    lifetime.
-    """
+    """Enforce a server-side sliding 30-minute idle limit."""
     session_id = entra_runtime._managed_session_id(request.cookies.get(baseline.SESSION_COOKIE))
     if not session_id:
         return False
