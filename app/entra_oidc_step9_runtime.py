@@ -7,6 +7,10 @@ without changing the managed identity, entitlement, or production-authorization
 contracts in the underlying Entra runtime.
 """
 
+import os
+
+from fastapi import Request
+
 from app.entra_oidc_runtime import app, baseline
 
 _ORIGINAL_LAYOUT = baseline.layout
@@ -70,3 +74,25 @@ def _step9_layout(title, body):
 # Existing portal routes call baseline.layout at request time, so this isolated
 # runtime overlay makes authentication state visible consistently across pages.
 baseline.layout = _step9_layout
+
+
+@app.middleware("http")
+async def step9_entra_logout_csp(request: Request, call_next):
+    """Permit the managed Entra end-session redirect after a same-origin form POST.
+
+    R4 deliberately restricts form-action to 'self'. Edge applies that policy to
+    the 303 redirect target as well, so the logout POST reaches North Star and
+    revokes the server session but navigation to CIAM is blocked. Keep the
+    policy narrow by allowing only this tenant's CIAM host.
+    """
+    response = await call_next(request)
+    csp = response.headers.get("Content-Security-Policy", "")
+    tenant_subdomain = os.environ.get("ENTRA_TENANT_SUBDOMAIN", "").strip()
+    if csp and tenant_subdomain:
+        entra_origin = f"https://{tenant_subdomain}.ciamlogin.com"
+        csp = csp.replace(
+            "form-action 'self';",
+            f"form-action 'self' {entra_origin};",
+        )
+        response.headers["Content-Security-Policy"] = csp
+    return response
