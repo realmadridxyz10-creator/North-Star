@@ -22,6 +22,22 @@ _ORIGINAL_LAYOUT = baseline.layout
 SESSION_IDLE_MAX_AGE = 1800
 
 
+# Step 11.7C-3C R1: adapt the authoritative B1 chapter-route registry shape
+# (module -> [[chapter_code, title, page], ...]) to the legacy runtime's
+# list-of-dicts contract. The governed source file itself remains unchanged.
+if isinstance(baseline.CHAPTER_REGISTRY, dict):
+    baseline.CHAPTER_REGISTRY = [
+        {
+            "module": module,
+            "chapter_code": row[0],
+            "title": row[1],
+            "page": row[2],
+        }
+        for module, rows in baseline.CHAPTER_REGISTRY.items()
+        for row in rows
+    ]
+
+
 def _init_managed_session_activity() -> None:
     c = baseline.db()
     columns = {row["name"] for row in c.execute("PRAGMA table_info(managed_sessions)").fetchall()}
