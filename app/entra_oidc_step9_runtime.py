@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Stage 5.3 Step 9 + Step 11.7B UAT overlay.
+"""Stage 5.3 Step 9 + Step 11 UAT overlay.
 
 Preserves managed Entra identity/session hardening and adds fail-closed,
 server-side entitlement enforcement for protected content and Premium AI.
@@ -20,22 +20,6 @@ from app.step11_entitlement_guard import require_portal_access, require_premium_
 
 _ORIGINAL_LAYOUT = baseline.layout
 SESSION_IDLE_MAX_AGE = 1800
-
-
-# Step 11.7C-3C R1: adapt the authoritative B1 chapter-route registry shape
-# (module -> [[chapter_code, title, page], ...]) to the legacy runtime's
-# list-of-dicts contract. The governed source file itself remains unchanged.
-if isinstance(baseline.CHAPTER_REGISTRY, dict):
-    baseline.CHAPTER_REGISTRY = [
-        {
-            "module": module,
-            "chapter_code": row[0],
-            "title": row[1],
-            "page": row[2],
-        }
-        for module, rows in baseline.CHAPTER_REGISTRY.items()
-        for row in rows
-    ]
 
 
 def _init_managed_session_activity() -> None:
@@ -81,6 +65,16 @@ def _hardened_upsert_managed_user(identity: dict) -> dict:
 
 entra_runtime._upsert_managed_user = _hardened_upsert_managed_user
 
+# Step 11.7C-3C R1: B1 chapter registry is authoritative as a module-keyed
+# dictionary, while legacy runtime handlers expect a flat list of chapter rows.
+# Normalize only the runtime view; do not alter the governed registry artifact.
+if isinstance(baseline.CHAPTER_REGISTRY, dict):
+    normalized_registry=[]
+    for module_name, module_data in baseline.CHAPTER_REGISTRY.items():
+        for chapter in (module_data or {}).get("chapters", []):
+            row=dict(chapter); row.setdefault("module", module_name); normalized_registry.append(row)
+    baseline.CHAPTER_REGISTRY=normalized_registry
+
 _AUTH_UX_STYLE="""<style>.ns-auth-state{display:inline-flex;align-items:center;margin-left:18px;padding:5px 10px;border:1px solid #5d7484;border-radius:18px;color:#d9e2e8;font-size:.78rem;white-space:nowrap}.ns-auth-state.authenticated{border-color:#c7a45a;color:#f0d58f}.ns-auth-state a{color:inherit;text-decoration:none;margin:0}.ns-access-status{margin-top:14px;padding:14px 16px;border:1px solid #d8d1c4;border-radius:8px;background:#fbfaf7}.ns-access-status strong{display:block;margin-bottom:4px;color:#09263a}.ns-access-status span{color:#52616b;font-size:.92rem;line-height:1.45}</style>"""
 _AUTH_UX_SCRIPT="""<script>(function(){const state=document.getElementById('ns-auth-state');function esc(v){return String(v).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c];});}function setState(d){if(!state)return;if(d&&d.authenticated){const u=d.user||{};state.className='ns-auth-state authenticated';state.innerHTML='<a href=\"/account\">'+esc(u.display_name||u.email||'Signed in')+' ▾</a>';}else{state.className='ns-auth-state anonymous';state.innerHTML='<a href=\"/account\">Sign in</a>';}}document.querySelectorAll('.account-panel h3').forEach(function(h){if(h.textContent.trim()!=='Effective entitlement')return;const raw=h.nextElementSibling;if(!raw||raw.tagName!=='PRE')return;try{const e=JSON.parse(raw.textContent||'{}');h.textContent='Access status';const box=document.createElement('div');box.className='ns-access-status';if(e.full_portal||e.module||e.premium_ai)box.innerHTML='<strong>Access enabled</strong><span>Your North Star access is active according to the server-verified entitlement record.</span>';else if(e.preview)box.innerHTML='<strong>Preview access</strong><span>You currently have preview access. Additional content becomes available when the corresponding entitlement is activated.</span>';else box.innerHTML='<strong>No active product access</strong>';raw.replaceWith(box);}catch(e){}});fetch('/api/auth/status',{credentials:'same-origin',cache:'no-store'}).then(r=>r.json()).then(setState);})();</script>"""
 
@@ -116,6 +110,15 @@ async def step9_session_security_and_logout_csp(request: Request, call_next):
     return response
 
 
+def _requested_module_from_path(path: str) -> str | None:
+    parts=[p for p in path.split('/') if p]
+    if len(parts) >= 3 and parts[0] == 'api' and parts[1] == 'chapters':
+        return parts[2].lower()
+    if len(parts) >= 2 and parts[0] == 'modules':
+        return parts[1].lower()
+    return None
+
+
 @app.middleware("http")
 async def step11_entitlement_authorization(request: Request, call_next):
     """Fail closed with controlled 401/403 responses before protected handlers."""
@@ -124,7 +127,7 @@ async def step11_entitlement_authorization(request: Request, call_next):
         if path.startswith('/api/ai/ask'):
             require_premium_ai(baseline, request)
         elif path.startswith('/api/chapters/') or path.startswith('/modules/'):
-            require_portal_access(baseline, request)
+            require_portal_access(baseline, request, _requested_module_from_path(path))
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
