@@ -12,6 +12,7 @@ import os
 import time
 
 from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app import entra_oidc_runtime as entra_runtime
 from app.entra_oidc_runtime import app, baseline
@@ -99,13 +100,15 @@ async def step9_session_security_and_logout_csp(request: Request, call_next):
     return response
 
 
-# Step 11.7B: fail closed before protected handlers execute. Public/auth/account,
-# health and entitlement-self-service routes remain outside this authorization gate.
 @app.middleware("http")
 async def step11_entitlement_authorization(request: Request, call_next):
+    """Fail closed with controlled 401/403 responses before protected handlers."""
     path=request.url.path
-    if path.startswith('/api/ai/ask'):
-        require_premium_ai(baseline, request)
-    elif path.startswith('/api/chapters/') or path.startswith('/modules/'):
-        require_portal_access(baseline, request)
+    try:
+        if path.startswith('/api/ai/ask'):
+            require_premium_ai(baseline, request)
+        elif path.startswith('/api/chapters/') or path.startswith('/modules/'):
+            require_portal_access(baseline, request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
