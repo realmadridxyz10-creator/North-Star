@@ -189,7 +189,8 @@ IDENTITY_PROVIDER='LOCAL_OIDC_SIMULATOR'
 PAYMENT_PROVIDER='PAYPAL_SIMULATOR'
 SESSION_COOKIE='ns_session'
 SESSION_SECRET=os.environ.get('NS_SESSION_SECRET') or secrets.token_hex(32)
-DB_PATH=DATA/'runtime_dev.sqlite3'
+DB_PATH=Path(os.environ.get('NS_DB_PATH') or (DATA/'runtime_dev.sqlite3'))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 PLANS={
     'preview':{'name':'Preview','price':'0.00','currency':'USD','entitlement':'preview','description':'Public orientation and selected governed content.'},
     'module':{'name':'Single Module','price':'29.00','currency':'USD','entitlement':'module','description':'One North Star level/module entitlement.'},
