@@ -71,11 +71,24 @@ entra_runtime._upsert_managed_user = _hardened_upsert_managed_user
 if isinstance(baseline.CHAPTER_REGISTRY, dict):
     normalized_registry=[]
     for module_name, module_data in baseline.CHAPTER_REGISTRY.items():
-        # Governed registry values may be either {"chapters": [...]} or a
-        # direct chapter list. Normalize both shapes into the legacy flat view.
-        chapters = module_data.get("chapters", []) if isinstance(module_data, dict) else (module_data or [])
+        # B1_D04 is module-keyed and each module value is a list of
+        # [chapter_code, title, page] rows. Normalize that governed shape into
+        # the legacy runtime's flat chapter dictionaries.
+        if isinstance(module_data, dict):
+            chapters = module_data.get("chapters", [])
+        else:
+            chapters = module_data or []
         for chapter in chapters:
-            row=dict(chapter); row.setdefault("module", module_name); normalized_registry.append(row)
+            if isinstance(chapter, dict):
+                row = dict(chapter)
+            elif isinstance(chapter, (list, tuple)) and len(chapter) >= 2:
+                row = {"chapter": chapter[0], "title": chapter[1]}
+                if len(chapter) >= 3:
+                    row["page"] = chapter[2]
+            else:
+                continue
+            row.setdefault("module", module_name)
+            normalized_registry.append(row)
     baseline.CHAPTER_REGISTRY=normalized_registry
 
 _AUTH_UX_STYLE="""<style>.ns-auth-state{display:inline-flex;align-items:center;margin-left:18px;padding:5px 10px;border:1px solid #5d7484;border-radius:18px;color:#d9e2e8;font-size:.78rem;white-space:nowrap}.ns-auth-state.authenticated{border-color:#c7a45a;color:#f0d58f}.ns-auth-state a{color:inherit;text-decoration:none;margin:0}.ns-access-status{margin-top:14px;padding:14px 16px;border:1px solid #d8d1c4;border-radius:8px;background:#fbfaf7}.ns-access-status strong{display:block;margin-bottom:4px;color:#09263a}.ns-access-status span{color:#52616b;font-size:.92rem;line-height:1.45}</style>"""
