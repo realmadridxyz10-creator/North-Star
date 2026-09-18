@@ -82,7 +82,7 @@ if isinstance(baseline.CHAPTER_REGISTRY, dict):
             if isinstance(chapter, dict):
                 row = dict(chapter)
             elif isinstance(chapter, (list, tuple)) and len(chapter) >= 2:
-                row = {"chapter": chapter[0], "title": chapter[1]}
+                row = {"chapter_code": chapter[0], "chapter_title": chapter[1]}
                 if len(chapter) >= 3:
                     row["page"] = chapter[2]
             else:
