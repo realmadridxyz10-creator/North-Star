@@ -71,7 +71,10 @@ entra_runtime._upsert_managed_user = _hardened_upsert_managed_user
 if isinstance(baseline.CHAPTER_REGISTRY, dict):
     normalized_registry=[]
     for module_name, module_data in baseline.CHAPTER_REGISTRY.items():
-        for chapter in (module_data or {}).get("chapters", []):
+        # Governed registry values may be either {"chapters": [...]} or a
+        # direct chapter list. Normalize both shapes into the legacy flat view.
+        chapters = module_data.get("chapters", []) if isinstance(module_data, dict) else (module_data or [])
+        for chapter in chapters:
             row=dict(chapter); row.setdefault("module", module_name); normalized_registry.append(row)
     baseline.CHAPTER_REGISTRY=normalized_registry
 
