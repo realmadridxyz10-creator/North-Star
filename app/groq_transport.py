@@ -7,7 +7,7 @@ provider-neutral JSON answer contract.
 import json
 from typing import Any, Callable
 
-from app.external_llm import ExternalLLMInvalidResponse, ExternalSynthesisRequest, ExternalSynthesisResponse
+from app.external_llm import ExternalLLMInvalidResponse, ExternalLLMUnavailable, ExternalSynthesisRequest, ExternalSynthesisResponse
 from app.openai_transport import stdlib_http_post
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -60,7 +60,7 @@ class GroqChatTransport:
                 category = "provider"
             else:
                 category = "http"
-            raise RuntimeError(f"groq_http_{status}_{category}")
+            raise ExternalLLMUnavailable(f"groq_http_{status}_{category}")
         try:
             raw = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(raw)
