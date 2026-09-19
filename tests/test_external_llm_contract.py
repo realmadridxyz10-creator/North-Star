@@ -190,3 +190,33 @@ def test_r2_provider_error_fails_closed_to_local():
     assert result["used_external"] is False
     assert result["provider"] == LOCAL_PROVIDER
     assert result["fallback_reason"] == "external_llm_provider_error"
+
+
+def test_assistant_page_has_operational_submission_path():
+    from app import main
+    html = main.assistant_page()
+    assert "addEventListener('click'" in html
+    assert "fetch('/api/ai/ask'" in html
+    assert "credentials:'same-origin'" in html
+    assert "type=\"button\"" in html
+    assert "try{" in html
+    assert "catch(e)" in html
+    assert "button.disabled=true" in html
+    assert "button.disabled=false" in html
+
+
+def test_assistant_page_preserves_governance_and_neutral_provider_wording():
+    from app import main
+    html = main.assistant_page()
+    assert "Grounded, not canonical" in html
+    assert "governed R4/B1 evidence" in html
+    assert "generated wording is not canonical North Star content" in html
+    assert "Provider execution is runtime-controlled." in html
+    assert "DEV provider: LOCAL_EVIDENCE" not in html
+    assert "No external model execution is claimed in this build." not in html
+
+
+def test_assistant_page_avoids_runtime_newline_javascript_literal_regression():
+    from app import main
+    html = main.assistant_page()
+    assert "split(String.fromCharCode(10)).join('<br>')" in html
