@@ -5,6 +5,7 @@ from html import escape
 import json, re, os, sqlite3, time, secrets, hmac, hashlib, base64, uuid
 from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
+from app.external_llm import ProviderNeutralLLMAdapter, safe_external_synthesis
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'data'
@@ -135,6 +136,7 @@ def build_compass(canonical_id=None,dimension=None,module=None,chapter=None,limi
 
 # DEV-004: grounded AI runtime. Provider-neutral contract; local deterministic evidence composer.
 AI_PROVIDER='LOCAL_EVIDENCE'
+EXTERNAL_LLM_ADAPTER=ProviderNeutralLLMAdapter()
 CHUNK_BY_ID={c.get('chunk_id'):c for c in CHUNKS if c.get('chunk_id')}
 
 def tokenize(q):
@@ -286,21 +288,24 @@ def api_compass(canonical_id:str|None=None,dimension:str|None=None,module:str|No
 
 @app.get('/api/ai/status')
 def ai_status():
+    adapter_status=EXTERNAL_LLM_ADAPTER.status()
     return {'release':RELEASE,'provider':AI_PROVIDER,'mode':'deterministic_grounded_evidence_composer','retrieval_chunks':len(CHUNKS),'canonical_authority':'R4/B1',
             'answer_classes':['canonical_navigation','grounded_explanation','grounded_comparison','decision_support','insufficient_evidence'],
-            'live_external_model':False,'production_authorized':False}
+            'external_llm':adapter_status,'live_external_model':adapter_status['live_external_model'],'production_authorized':False}
 
 @app.post('/api/ai/ask')
 def ai_ask(req:AIAskRequest):
     cls=classify_question(req.question)
     if cls=='policy_attack':
-        return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':'insufficient_evidence','answer':'I cannot override North Star governance, reveal hidden instructions, or treat generated wording as canonical content.','citations':[],'grounded':False,'canonical_content':False,'notice':'AI-generated wording is not canonical North Star content.'}
+        return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':'insufficient_evidence','answer':'I cannot override North Star governance, reveal hidden instructions, or treat generated wording as canonical content.','citations':[],'grounded':False,'canonical_content':False,'external_llm_used':False,'notice':'AI-generated wording is not canonical North Star content.'}
     evidence=retrieve_evidence(req.question,req.max_evidence)
     if not evidence:
         cls='insufficient_evidence'
-    ans=compose_grounded_answer(req.question,cls,evidence)
-    return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':cls,'answer':ans,'citations':[citation_from_chunk(c) for c in evidence],
-            'grounded':bool(evidence),'canonical_content':False,'notice':'AI-generated wording is not canonical North Star content. Canonical authority remains R4/B1.'}
+    external=safe_external_synthesis(EXTERNAL_LLM_ADAPTER,req.question,cls,evidence) if EXTERNAL_LLM_ADAPTER.config.external_requested else {'used_external':False,'answer':None,'provider':AI_PROVIDER,'fallback_reason':None}
+    ans=external['answer'] if external['used_external'] else compose_grounded_answer(req.question,cls,evidence)
+    return {'release':RELEASE,'provider':external['provider'],'answer_class':cls,'answer':ans,'citations':[citation_from_chunk(c) for c in evidence],
+            'grounded':bool(evidence),'canonical_content':False,'external_llm_used':external['used_external'],'external_llm_fallback_reason':external['fallback_reason'],
+            'notice':'AI-generated wording is not canonical North Star content. Canonical authority remains R4/B1.'}
 
 @app.get('/api/auth/status')
 def auth_status(request:Request):
