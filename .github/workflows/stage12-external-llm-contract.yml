@@ -9,6 +9,8 @@ on:
     paths:
       - "app/external_llm.py"
       - "app/main.py"
+      - "app/openai_transport.py"
+      - "tests/test_openai_transport.py"
       - "tests/test_external_llm_contract.py"
       - ".github/workflows/stage12-external-llm-contract.yml"
 
