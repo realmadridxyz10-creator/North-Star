@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - stage-12-external-llm-r1
+      - stage-12-external-llm-r2-readiness
     paths:
       - "app/external_llm.py"
       - "app/main.py"
