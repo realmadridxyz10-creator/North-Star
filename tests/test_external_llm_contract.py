@@ -85,3 +85,49 @@ def test_runtime_policy_attack_never_uses_external_adapter():
     assert result["external_llm_used"] is False
     assert result["canonical_content"] is False
     assert result["citations"] == []
+
+
+def test_runtime_ai_status_exposes_non_live_governed_adapter():
+    from app import main
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(load_llm_config({
+        "NS_LLM_MODE": "external",
+        "NS_LLM_PROVIDER": "TEST_PROVIDER",
+        "NS_LLM_MODEL": "test-model",
+    }))
+    result = main.ai_status()
+    assert result["canonical_authority"] == "R4/B1"
+    assert result["live_external_model"] is False
+    assert result["production_authorized"] is False
+    assert result["external_llm"]["external_requested"] is True
+    assert result["external_llm"]["live_external_model"] is False
+    assert result["external_llm"]["fallback_provider"] == LOCAL_PROVIDER
+    assert result["external_llm"]["production_authorized"] is False
+
+
+def test_runtime_local_mode_does_not_attempt_external_synthesis(monkeypatch):
+    from app import main
+
+    class MustNotBeCalled:
+        class Config:
+            external_requested = False
+        config = Config()
+
+        def status(self):
+            return {
+                "external_requested": False,
+                "live_external_model": False,
+                "fallback_provider": LOCAL_PROVIDER,
+                "production_authorized": False,
+            }
+
+        def synthesize(self, *args, **kwargs):
+            raise AssertionError("external synthesis must not be called in local mode")
+
+    main.EXTERNAL_LLM_ADAPTER = MustNotBeCalled()
+    req = main.AIAskRequest(question="Explain North Star governance", max_evidence=3)
+    result = main.ai_ask(req)
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["external_llm_used"] is False
+    assert result["external_llm_fallback_reason"] is None
+    assert result["grounded"] is True
+    assert result["citations"]
