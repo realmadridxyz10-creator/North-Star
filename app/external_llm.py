@@ -6,7 +6,7 @@ call, or production authorization is introduced by this module.
 """
 from dataclasses import dataclass
 import os
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 LOCAL_PROVIDER = "LOCAL_EVIDENCE"
 SUPPORTED_MODES = {"local", "external"}
@@ -49,6 +49,43 @@ class ExternalLLMUnavailable(RuntimeError):
     pass
 
 
+class ExternalLLMInvalidResponse(ExternalLLMUnavailable):
+    pass
+
+
+@dataclass(frozen=True)
+class ExternalSynthesisRequest:
+    question: str
+    answer_class: str
+    evidence: Sequence[Mapping[str, Any]]
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
+class ExternalSynthesisResponse:
+    answer: str
+    grounded: bool
+
+
+def validate_external_response(response: ExternalSynthesisResponse) -> str:
+    answer = (response.answer or "").strip()
+    if not answer:
+        raise ExternalLLMInvalidResponse("external_empty_answer")
+    if not response.grounded:
+        raise ExternalLLMInvalidResponse("external_grounding_not_confirmed")
+    return answer
+
+
+class MockExternalProvider:
+    """Controlled R2 transport substitute. No network, SDK, or credential use."""
+
+    def __init__(self, handler: Callable[[ExternalSynthesisRequest], ExternalSynthesisResponse]):
+        self._handler = handler
+
+    def synthesize(self, request: ExternalSynthesisRequest) -> ExternalSynthesisResponse:
+        return self._handler(request)
+
+
 class ProviderNeutralLLMAdapter:
     """Non-live R1 adapter boundary.
 
@@ -57,8 +94,9 @@ class ProviderNeutralLLMAdapter:
     canonical authority or silently convert generated text into canonical text.
     """
 
-    def __init__(self, config: LLMConfig | None = None):
+    def __init__(self, config: LLMConfig | None = None, transport: Any | None = None):
         self.config = config or load_llm_config()
+        self.transport = transport
 
     def status(self) -> dict[str, Any]:
         return {
@@ -80,7 +118,20 @@ class ProviderNeutralLLMAdapter:
     ) -> str:
         if not evidence:
             raise ExternalLLMUnavailable("insufficient_governed_evidence")
-        raise ExternalLLMUnavailable("external_llm_not_enabled_in_r1")
+        if not self.config.external_requested:
+            raise ExternalLLMUnavailable("external_llm_not_requested")
+        if self.transport is None:
+            raise ExternalLLMUnavailable("external_llm_transport_not_configured")
+        request = ExternalSynthesisRequest(question=question, answer_class=answer_class, evidence=evidence, timeout_seconds=self.config.timeout_seconds)
+        try:
+            response = self.transport.synthesize(request)
+        except TimeoutError as exc:
+            raise ExternalLLMUnavailable("external_llm_timeout") from exc
+        except ExternalLLMUnavailable:
+            raise
+        except Exception as exc:
+            raise ExternalLLMUnavailable("external_llm_provider_error") from exc
+        return validate_external_response(response)
 
 
 def safe_external_synthesis(
