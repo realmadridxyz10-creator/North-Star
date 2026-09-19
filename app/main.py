@@ -7,6 +7,7 @@ from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
 from app.external_llm import ProviderNeutralLLMAdapter, load_llm_config, safe_external_synthesis
 from app.openai_transport import OpenAIResponsesTransport, stdlib_http_post
+from app.groq_transport import GroqChatTransport
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'data'
@@ -143,13 +144,20 @@ def build_external_llm_adapter():
     config=load_llm_config()
     if not config.external_requested:
         return ProviderNeutralLLMAdapter(config)
-    if config.provider.upper()!='OPENAI':
-        return ProviderNeutralLLMAdapter(config)
-    api_key=(os.environ.get('OPENAI_API_KEY') or '').strip()
-    if not api_key or not config.model:
-        return ProviderNeutralLLMAdapter(config)
-    transport=OpenAIResponsesTransport(api_key,config.model,stdlib_http_post)
-    return ProviderNeutralLLMAdapter(config,transport)
+    provider=config.provider.upper()
+    if provider=='OPENAI':
+        api_key=(os.environ.get('OPENAI_API_KEY') or '').strip()
+        if not api_key or not config.model:
+            return ProviderNeutralLLMAdapter(config)
+        transport=OpenAIResponsesTransport(api_key,config.model,stdlib_http_post)
+        return ProviderNeutralLLMAdapter(config,transport)
+    if provider=='GROQ':
+        api_key=(os.environ.get('GROQ_API_KEY') or '').strip()
+        if not api_key or not config.model:
+            return ProviderNeutralLLMAdapter(config)
+        transport=GroqChatTransport(api_key,config.model,stdlib_http_post)
+        return ProviderNeutralLLMAdapter(config,transport)
+    return ProviderNeutralLLMAdapter(config)
 
 
 EXTERNAL_LLM_ADAPTER=build_external_llm_adapter()
