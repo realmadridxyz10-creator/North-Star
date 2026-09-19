@@ -5,7 +5,8 @@ from html import escape
 import json, re, os, sqlite3, time, secrets, hmac, hashlib, base64, uuid
 from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
-from app.external_llm import ProviderNeutralLLMAdapter, safe_external_synthesis
+from app.external_llm import ProviderNeutralLLMAdapter, load_llm_config, safe_external_synthesis
+from app.openai_transport import OpenAIResponsesTransport, stdlib_http_post
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'data'
@@ -136,7 +137,22 @@ def build_compass(canonical_id=None,dimension=None,module=None,chapter=None,limi
 
 # DEV-004: grounded AI runtime. Provider-neutral contract; local deterministic evidence composer.
 AI_PROVIDER='LOCAL_EVIDENCE'
-EXTERNAL_LLM_ADAPTER=ProviderNeutralLLMAdapter()
+
+
+def build_external_llm_adapter():
+    config=load_llm_config()
+    if not config.external_requested:
+        return ProviderNeutralLLMAdapter(config)
+    if config.provider.upper()!='OPENAI':
+        return ProviderNeutralLLMAdapter(config)
+    api_key=(os.environ.get('OPENAI_API_KEY') or '').strip()
+    if not api_key or not config.model:
+        return ProviderNeutralLLMAdapter(config)
+    transport=OpenAIResponsesTransport(api_key,config.model,stdlib_http_post)
+    return ProviderNeutralLLMAdapter(config,transport)
+
+
+EXTERNAL_LLM_ADAPTER=build_external_llm_adapter()
 CHUNK_BY_ID={c.get('chunk_id'):c for c in CHUNKS if c.get('chunk_id')}
 
 def tokenize(q):
