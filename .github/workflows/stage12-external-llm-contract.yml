@@ -7,6 +7,7 @@ on:
       - stage-12-external-llm-r1
     paths:
       - "app/external_llm.py"
+      - "app/main.py"
       - "tests/test_external_llm_contract.py"
       - ".github/workflows/stage12-external-llm-contract.yml"
 
