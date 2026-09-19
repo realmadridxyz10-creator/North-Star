@@ -1,0 +1,22 @@
+name: Stage 12 External LLM R1 Contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - stage-12-external-llm-r1
+    paths:
+      - "app/external_llm.py"
+      - "tests/test_external_llm_contract.py"
+      - ".github/workflows/stage12-external-llm-contract.yml"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Execute provider-neutral fail-closed contract tests
+        run: python -m pytest -q tests/test_external_llm_contract.py
