@@ -89,3 +89,36 @@ def test_openai_transport_requires_server_side_configuration():
             raise AssertionError("expected configuration failure")
         except ValueError as exc:
             assert str(exc) == expected
+
+
+def test_runtime_builder_stays_non_live_without_key(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE","external")
+    monkeypatch.setenv("NS_LLM_PROVIDER","OPENAI")
+    monkeypatch.setenv("NS_LLM_MODEL","gpt-5.4-mini")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    from app import main
+    adapter = main.build_external_llm_adapter()
+    assert adapter.config.external_requested is True
+    assert adapter.transport is None
+
+
+def test_runtime_builder_wires_transport_only_when_key_present(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE","external")
+    monkeypatch.setenv("NS_LLM_PROVIDER","OPENAI")
+    monkeypatch.setenv("NS_LLM_MODEL","gpt-5.4-mini")
+    monkeypatch.setenv("OPENAI_API_KEY","synthetic-ci-key")
+    from app import main
+    adapter = main.build_external_llm_adapter()
+    assert isinstance(adapter.transport, OpenAIResponsesTransport)
+    assert adapter.config.provider == "OPENAI"
+    assert adapter.config.model == "gpt-5.4-mini"
+
+
+def test_runtime_builder_rejects_unknown_provider_by_not_wiring(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE","external")
+    monkeypatch.setenv("NS_LLM_PROVIDER","UNKNOWN")
+    monkeypatch.setenv("NS_LLM_MODEL","model")
+    monkeypatch.setenv("OPENAI_API_KEY","synthetic-ci-key")
+    from app import main
+    adapter = main.build_external_llm_adapter()
+    assert adapter.transport is None
