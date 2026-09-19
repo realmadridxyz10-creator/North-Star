@@ -5,6 +5,7 @@ evidence and returns a validated provider-neutral synthesis object. Credentials
 remain server-side. Importing this module performs no network request.
 """
 import json
+from urllib import error, request as urllib_request
 from typing import Any, Callable
 
 from app.external_llm import (
@@ -14,6 +15,25 @@ from app.external_llm import (
 )
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+
+def stdlib_http_post(url: str, *, headers: dict[str, str], json: dict[str, Any], timeout: int):
+    """Minimal stdlib POST client; no provider SDK dependency."""
+    data = __import__("json").dumps(json, separators=(",", ":")).encode("utf-8")
+    req = urllib_request.Request(url, data=data, method="POST", headers=headers)
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            status = resp.status
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        status = exc.code
+
+    class Response:
+        status_code = status
+        def json(self):
+            return __import__("json").loads(body)
+    return Response()
 
 RESPONSE_SCHEMA = {
     "type": "object",
