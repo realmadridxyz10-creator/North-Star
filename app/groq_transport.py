@@ -46,8 +46,21 @@ class GroqChatTransport:
             json=self._payload(request),
             timeout=request.timeout_seconds,
         )
-        if getattr(response, "status_code", 500) != 200:
-            raise RuntimeError("groq_http_error")
+        status = getattr(response, "status_code", 500)
+        if status != 200:
+            # Safe diagnostic only: expose HTTP status/category, never provider
+            # body, request content, credentials, headers, session data, or PII.
+            if status in (401, 403):
+                category = "auth"
+            elif status == 429:
+                category = "rate_limit"
+            elif 400 <= status < 500:
+                category = "request"
+            elif status >= 500:
+                category = "provider"
+            else:
+                category = "http"
+            raise RuntimeError(f"groq_http_{status}_{category}")
         try:
             raw = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(raw)
