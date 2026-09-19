@@ -32,10 +32,18 @@ def test_groq_wrong_types_fail_closed():
     try: t.synthesize(req()); raise AssertionError("expected invalid")
     except ExternalLLMInvalidResponse as e: assert str(e)=="external_schema_invalid"
 
-def test_groq_non_200_maps_to_generic_provider_error():
-    t=GroqChatTransport("synthetic-key","openai/gpt-oss-20b",lambda *a,**k: FakeResponse(status_code=429))
-    try: t.synthesize(req()); raise AssertionError("expected provider error")
-    except RuntimeError as e: assert str(e)=="groq_http_error"
+def test_groq_non_200_exposes_only_safe_http_diagnostic():
+    cases = [
+        (400, "groq_http_400_request"),
+        (401, "groq_http_401_auth"),
+        (403, "groq_http_403_auth"),
+        (429, "groq_http_429_rate_limit"),
+        (500, "groq_http_500_provider"),
+    ]
+    for status, expected in cases:
+        t=GroqChatTransport("synthetic-key","openai/gpt-oss-20b",lambda *a,_status=status,**k: FakeResponse(status_code=_status))
+        try: t.synthesize(req()); raise AssertionError("expected provider error")
+        except RuntimeError as e: assert str(e)==expected
 
 def test_groq_requires_key_and_model():
     for key,model,msg in [("","m","groq_api_key_required"),("k","","groq_model_required")]:
