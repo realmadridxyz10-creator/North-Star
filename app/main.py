@@ -465,7 +465,24 @@ def compass_page(canonical_id:str|None=None,dimension:str|None=None,module:str|N
 
 @app.get('/assistant',response_class=HTMLResponse)
 def assistant_page():
-    body='''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">Grounded AI</div><h1 style="font-family:Georgia,serif;margin:.2em 0">Ask North Star</h1><p style="color:#c4d2dc;max-width:780px">Ask for explanation, comparison, navigation or decision support. Answers are generated only from governed R4/B1 retrieval evidence and cite their sources.</p></div></section><section class="section"><div class="shell ai-shell"><section class="ai-panel"><label for="q"><b>Your question</b></label><textarea id="q" placeholder="Example: How should an executive think about governance and risk?"></textarea><div class="actions"><button class="btn" id="ask">Ask North Star</button></div><div id="answer" aria-live="polite"></div></section><aside class="ai-panel"><div class="eyebrow">AI governance</div><h2>Grounded, not canonical</h2><p>This assistant may explain, navigate, compare and support decisions. It may not silently rewrite North Star or present generated wording as canonical R4 content.</p><p class="notice">DEV provider: LOCAL_EVIDENCE. No external model execution is claimed in this build.</p></aside></div></section></main><script>document.getElementById('ask').onclick=async()=>{let q=document.getElementById('q').value,a=document.getElementById('answer');a.innerHTML='<p>Retrieving governed evidence…</p>';let r=await fetch('/api/ai/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question:q,max_evidence:6})});let d=await r.json();let c=(d.citations||[]).map(x=>`<div class="citation"><b>${x.canonical_id||x.chunk_id}</b> · ${x.module||''} ${x.chapter||''}<br><a href="${x.route||'#'}">Open governed source</a></div>`).join('');a.innerHTML=`<div class="ai-answer"><div class="meta">${d.answer_class} · ${d.provider}</div>${d.answer.replaceAll('\n','<br>')}</div><h3>Governed evidence</h3>${c}<p class="notice">${d.notice}</p>`}</script>'''
+    body='''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">Grounded AI</div><h1 style="font-family:Georgia,serif;margin:.2em 0">Ask North Star</h1><p style="color:#c4d2dc;max-width:780px">Ask for explanation, comparison, navigation or decision support. Answers are generated only from governed R4/B1 retrieval evidence and cite their sources.</p></div></section><section class="section"><div class="shell ai-shell"><section class="ai-panel"><label for="q"><b>Your question</b></label><textarea id="q" placeholder="Example: How should an executive think about governance and risk?"></textarea><div class="actions"><button class="btn" id="ask" type="button">Ask North Star</button></div><div id="answer" aria-live="polite"></div></section><aside class="ai-panel"><div class="eyebrow">AI governance</div><h2>Grounded, not canonical</h2><p>This assistant may explain, navigate, compare and support decisions. It may not silently rewrite North Star or present generated wording as canonical R4 content.</p><p class="notice">Provider execution is runtime-controlled. Responses remain grounded in governed R4/B1 evidence; generated wording is not canonical North Star content.</p></aside></div></section></main><script>
+document.getElementById('ask').addEventListener('click',async function(){
+    const button=this,q=document.getElementById('q').value.trim(),a=document.getElementById('answer');
+    if(!q){a.textContent='Enter a North Star question first.';return;}
+    button.disabled=true;a.innerHTML='<p>Retrieving governed evidence…</p>';
+    try{
+        const r=await fetch('/api/ai/ask',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({question:q,max_evidence:6})});
+        let d;
+        try{d=await r.json();}catch(e){throw new Error('invalid_response');}
+        if(!r.ok)throw new Error(d.detail||('request_failed_'+r.status));
+        const c=(d.citations||[]).map(x=>`<div class="citation"><b>${x.canonical_id||x.chunk_id}</b> · ${x.module||''} ${x.chapter||''}<br><a href="${x.route||'#'}">Open governed source</a></div>`).join('');
+        const answer=String(d.answer||'').split(String.fromCharCode(10)).join('<br>');
+        a.innerHTML=`<div class="ai-answer"><div class="meta">${d.answer_class||''} · ${d.provider||''}</div>${answer}</div><h3>Governed evidence</h3>${c}<p class="notice">${d.notice||''}</p>`;
+    }catch(e){
+        a.innerHTML='<div class="empty">Ask North Star could not complete this request. No answer has been accepted. Please retry only after the service status is verified.</div>';
+    }finally{button.disabled=false;}
+});
+</script>'''
     return layout('Ask North Star',body)
 
 @app.get('/account',response_class=HTMLResponse)
