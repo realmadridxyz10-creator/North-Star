@@ -1,6 +1,8 @@
 from app.external_llm import (
     LOCAL_PROVIDER,
     ExternalLLMUnavailable,
+    ExternalSynthesisResponse,
+    MockExternalProvider,
     ProviderNeutralLLMAdapter,
     load_llm_config,
     safe_external_synthesis,
@@ -57,7 +59,7 @@ def test_external_request_uses_safe_local_fallback_in_r1():
     assert result["used_external"] is False
     assert result["provider"] == LOCAL_PROVIDER
     assert result["answer"] is None
-    assert result["fallback_reason"] == "external_llm_not_enabled_in_r1"
+    assert result["fallback_reason"] == "external_llm_transport_not_configured"
 
 
 def test_runtime_ai_path_preserves_local_fallback(monkeypatch):
@@ -71,7 +73,7 @@ def test_runtime_ai_path_preserves_local_fallback(monkeypatch):
     result = main.ai_ask(req)
     assert result["provider"] == LOCAL_PROVIDER
     assert result["external_llm_used"] is False
-    assert result["external_llm_fallback_reason"] == "external_llm_not_enabled_in_r1"
+    assert result["external_llm_fallback_reason"] == "external_llm_transport_not_configured"
     assert result["canonical_content"] is False
     assert result["grounded"] is True
     assert result["citations"]
@@ -131,3 +133,60 @@ def test_runtime_local_mode_does_not_attempt_external_synthesis(monkeypatch):
     assert result["external_llm_fallback_reason"] is None
     assert result["grounded"] is True
     assert result["citations"]
+
+
+def test_r2_mock_provider_accepts_grounded_response():
+    cfg = load_llm_config({"NS_LLM_MODE":"external","NS_LLM_PROVIDER":"MOCK","NS_LLM_TIMEOUT_SECONDS":"7"})
+    seen = {}
+    def handler(req):
+        seen["request"] = req
+        return ExternalSynthesisResponse(answer="Grounded synthesis.", grounded=True)
+    adapter = ProviderNeutralLLMAdapter(cfg, MockExternalProvider(handler))
+    result = safe_external_synthesis(adapter, "Question?", "grounded_explanation", [{"chunk_id":"c1","text":"Evidence"}])
+    assert result["used_external"] is True
+    assert result["answer"] == "Grounded synthesis."
+    assert result["provider"] == "MOCK"
+    assert seen["request"].timeout_seconds == 7
+    assert len(seen["request"].evidence) == 1
+
+
+def test_r2_timeout_fails_closed_to_local():
+    def handler(req):
+        raise TimeoutError()
+    adapter = ProviderNeutralLLMAdapter(load_llm_config({"NS_LLM_MODE":"external","NS_LLM_PROVIDER":"MOCK"}), MockExternalProvider(handler))
+    result = safe_external_synthesis(adapter, "Question?", "grounded_explanation", [{"text":"Evidence"}])
+    assert result["used_external"] is False
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["fallback_reason"] == "external_llm_timeout"
+
+
+def test_r2_ungrounded_response_fails_closed_to_local():
+    adapter = ProviderNeutralLLMAdapter(
+        load_llm_config({"NS_LLM_MODE":"external","NS_LLM_PROVIDER":"MOCK"}),
+        MockExternalProvider(lambda req: ExternalSynthesisResponse(answer="Unsupported answer", grounded=False)),
+    )
+    result = safe_external_synthesis(adapter, "Question?", "grounded_explanation", [{"text":"Evidence"}])
+    assert result["used_external"] is False
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["fallback_reason"] == "external_grounding_not_confirmed"
+
+
+def test_r2_empty_response_fails_closed_to_local():
+    adapter = ProviderNeutralLLMAdapter(
+        load_llm_config({"NS_LLM_MODE":"external","NS_LLM_PROVIDER":"MOCK"}),
+        MockExternalProvider(lambda req: ExternalSynthesisResponse(answer="   ", grounded=True)),
+    )
+    result = safe_external_synthesis(adapter, "Question?", "grounded_explanation", [{"text":"Evidence"}])
+    assert result["used_external"] is False
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["fallback_reason"] == "external_empty_answer"
+
+
+def test_r2_provider_error_fails_closed_to_local():
+    def handler(req):
+        raise RuntimeError("provider detail must not escape")
+    adapter = ProviderNeutralLLMAdapter(load_llm_config({"NS_LLM_MODE":"external","NS_LLM_PROVIDER":"MOCK"}), MockExternalProvider(handler))
+    result = safe_external_synthesis(adapter, "Question?", "grounded_explanation", [{"text":"Evidence"}])
+    assert result["used_external"] is False
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["fallback_reason"] == "external_llm_provider_error"
