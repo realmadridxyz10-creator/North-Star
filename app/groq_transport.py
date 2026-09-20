@@ -60,7 +60,22 @@ class GroqChatTransport:
                 category = "provider"
             else:
                 category = "http"
-            raise ExternalLLMUnavailable(f"groq_http_{status}_{category}")
+            # Preserve only a bounded machine-readable provider code when present.
+            # Never propagate the provider message/body, request content, headers,
+            # credentials, session data, cookies, or PII.
+            provider_code = None
+            try:
+                error_obj = response.json().get("error", {})
+                candidate = error_obj.get("code") or error_obj.get("type")
+                if isinstance(candidate, str):
+                    safe = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in candidate)
+                    provider_code = safe[:64] or None
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                provider_code = None
+            reason = f"groq_http_{status}_{category}"
+            if provider_code:
+                reason = f"{reason}_{provider_code}"
+            raise ExternalLLMUnavailable(reason)
         try:
             raw = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(raw)
