@@ -114,17 +114,17 @@ class GroqChatTransport:
             headers = getattr(response, "headers", {}) or {}
             lowered = {str(k).lower(): str(v) for k, v in headers.items()}
             content_type = lowered.get("content-type", "").lower()
+            response_format = None
             if "json" in content_type:
                 response_format = "json"
             elif "html" in content_type:
                 response_format = "html"
             elif content_type.startswith("text/"):
                 response_format = "text"
-            elif not content_type:
-                response_format = "unknown"
-            else:
+            elif content_type:
                 response_format = "other"
-            reason = f"{reason}_format_{response_format}"
+            if response_format:
+                reason = f"{reason}_format_{response_format}"
 
             # Bounded origin diagnostic: allow only a small set of non-secret
             # response headers and never propagate arbitrary header values.
