@@ -75,6 +75,24 @@ class GroqChatTransport:
             reason = f"groq_http_{status}_{category}"
             if provider_code:
                 reason = f"{reason}_{provider_code}"
+
+            # Bounded origin diagnostic: allow only a small set of non-secret
+            # response headers and never propagate arbitrary header values.
+            headers = getattr(response, "headers", {}) or {}
+            lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+            origin = None
+            server = lowered.get("server", "").lower()
+            via = lowered.get("via", "").lower()
+            if "cloudflare" in server or "cloudflare" in via:
+                origin = "cloudflare"
+            elif "groq" in server or "groq" in via:
+                origin = "groq"
+            elif server:
+                origin = "server_present"
+            elif via:
+                origin = "via_present"
+            if origin:
+                reason = f"{reason}_origin_{origin}"
             raise ExternalLLMUnavailable(reason)
         try:
             raw = response.json()["choices"][0]["message"]["content"]
