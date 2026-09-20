@@ -76,6 +76,39 @@ class GroqChatTransport:
             if provider_code:
                 reason = f"{reason}_{provider_code}"
 
+            # Bounded 401/403 message classification only. Inspect the provider
+            # message in memory, but emit only a fixed non-secret category.
+            # Never propagate the raw message/body or arbitrary provider text.
+            if status in (401, 403):
+                provider_message_class = None
+                try:
+                    error_obj = response.json().get("error", {})
+                    message = error_obj.get("message")
+                    if isinstance(message, str):
+                        normalized = message.lower()
+                        if "api key" in normalized or "apikey" in normalized:
+                            provider_message_class = "api_key"
+                        elif "organization" in normalized or "organisation" in normalized:
+                            provider_message_class = "organization"
+                        elif "project" in normalized:
+                            provider_message_class = "project"
+                        elif "model" in normalized:
+                            provider_message_class = "model"
+                        elif "permission" in normalized or "forbidden" in normalized or "not allowed" in normalized:
+                            provider_message_class = "permission"
+                        elif "blocked" in normalized or "block" in normalized:
+                            provider_message_class = "blocked"
+                        elif "region" in normalized or "country" in normalized or "location" in normalized:
+                            provider_message_class = "region"
+                        elif "cloudflare" in normalized:
+                            provider_message_class = "cloudflare"
+                        else:
+                            provider_message_class = "unclassified"
+                except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                    provider_message_class = None
+                if provider_message_class:
+                    reason = f"{reason}_msg_{provider_message_class}"
+
             # Bounded origin diagnostic: allow only a small set of non-secret
             # response headers and never propagate arbitrary header values.
             headers = getattr(response, "headers", {}) or {}
