@@ -109,10 +109,25 @@ class GroqChatTransport:
                 if provider_message_class:
                     reason = f"{reason}_msg_{provider_message_class}"
 
-            # Bounded origin diagnostic: allow only a small set of non-secret
-            # response headers and never propagate arbitrary header values.
+            # Bounded response-format diagnostic. Classify only the response
+            # representation; never expose the raw body or arbitrary content-type.
             headers = getattr(response, "headers", {}) or {}
             lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+            content_type = lowered.get("content-type", "").lower()
+            if "json" in content_type:
+                response_format = "json"
+            elif "html" in content_type:
+                response_format = "html"
+            elif content_type.startswith("text/"):
+                response_format = "text"
+            elif not content_type:
+                response_format = "unknown"
+            else:
+                response_format = "other"
+            reason = f"{reason}_format_{response_format}"
+
+            # Bounded origin diagnostic: allow only a small set of non-secret
+            # response headers and never propagate arbitrary header values.
             origin = None
             server = lowered.get("server", "").lower()
             via = lowered.get("via", "").lower()
