@@ -25,12 +25,15 @@ def stdlib_http_post(url: str, *, headers: dict[str, str], json: dict[str, Any],
         with urllib_request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             status = resp.status
+            response_headers = dict(resp.headers.items())
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         status = exc.code
+        response_headers = dict(exc.headers.items()) if exc.headers else {}
 
     class Response:
         status_code = status
+        headers = response_headers
         def json(self):
             return __import__("json").loads(body)
     return Response()
