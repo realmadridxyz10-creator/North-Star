@@ -69,7 +69,6 @@ def main():
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "north-star-groq-connectivity-probe/1.0",
         },
         method="POST",
     )
