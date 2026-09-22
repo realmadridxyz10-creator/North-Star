@@ -91,6 +91,7 @@ def test_runtime_ai_path_preserves_local_fallback(monkeypatch):
     assert result["citations"]
 
 
+# Gate 13.2 — runtime provider-failure/fallback assurance.
 def test_runtime_ai_path_provider_failure_preserves_governed_local_fallback(
     monkeypatch,
 ):
@@ -161,6 +162,45 @@ def test_runtime_ai_path_timeout_preserves_governed_local_fallback(
     assert result["canonical_content"] is False
     assert result["grounded"] is True
     assert result["citations"]
+
+
+# Gate 13.4 — runtime grounding-failure/fallback assurance.
+def test_runtime_ai_path_ungrounded_response_preserves_governed_local_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(
+            lambda req: ExternalSynthesisResponse(
+                answer="Unsupported external answer",
+                grounded=False,
+            )
+        ),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+    result = main.ai_ask(req)
+
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["external_llm_used"] is False
+    assert (
+        result["external_llm_fallback_reason"]
+        == "external_grounding_not_confirmed"
+    )
+    assert result["canonical_content"] is False
+    assert result["grounded"] is True
+    assert result["citations"]
+    assert "Unsupported external answer" not in str(result)
 
 
 def test_runtime_policy_attack_never_uses_external_adapter():
