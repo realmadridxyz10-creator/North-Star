@@ -486,6 +486,78 @@ def test_runtime_provider_attribution_matches_actual_execution(monkeypatch):
     assert "provider failure" not in str(fallback_result)
 
 
+# Gate 13.11 — runtime fail-closed regression consolidation assurance.
+def test_runtime_external_failure_modes_converge_on_governed_local_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+
+    cases = [
+        (
+            "provider_error",
+            lambda request: (_ for _ in ()).throw(
+                RuntimeError("private provider diagnostic")
+            ),
+            "external_llm_provider_error",
+        ),
+        (
+            "timeout",
+            lambda request: (_ for _ in ()).throw(TimeoutError()),
+            "external_llm_timeout",
+        ),
+        (
+            "ungrounded",
+            lambda request: ExternalSynthesisResponse(
+                answer="Unsupported external synthesis.",
+                grounded=False,
+            ),
+            "external_grounding_not_confirmed",
+        ),
+        (
+            "empty",
+            lambda request: ExternalSynthesisResponse(
+                answer="   ",
+                grounded=True,
+            ),
+            "external_empty_answer",
+        ),
+    ]
+
+    for case_name, handler, expected_reason in cases:
+        main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+            load_llm_config({
+                "NS_LLM_MODE": "external",
+                "NS_LLM_PROVIDER": "MOCK",
+            }),
+            MockExternalProvider(handler),
+        )
+
+        result = main.ai_ask(req)
+
+        assert result["provider"] == LOCAL_PROVIDER, case_name
+        assert result["external_llm_used"] is False, case_name
+        assert (
+            result["external_llm_fallback_reason"]
+            == expected_reason
+        ), case_name
+
+        assert result["canonical_content"] is False, case_name
+        assert result["grounded"] is True, case_name
+        assert result["citations"], case_name
+
+        # External failure details or rejected synthesis must never
+        # become authoritative governed output.
+        assert "private provider diagnostic" not in str(result), case_name
+        assert "Unsupported external synthesis." not in str(result), case_name
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
