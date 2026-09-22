@@ -424,6 +424,68 @@ def test_runtime_external_response_cannot_override_governed_metadata(monkeypatch
     assert result["citations"] != []
 
 
+# Gate 13.10 — runtime provider-attribution integrity assurance.
+def test_runtime_provider_attribution_matches_actual_execution(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    # Successful external execution must identify the actual provider.
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(
+            lambda req: ExternalSynthesisResponse(
+                answer="Governed external synthesis.",
+                grounded=True,
+            )
+        ),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+    external_result = main.ai_ask(req)
+
+    assert external_result["provider"] == "MOCK"
+    assert external_result["external_llm_used"] is True
+    assert external_result["external_llm_fallback_reason"] is None
+    assert external_result["canonical_content"] is False
+    assert external_result["grounded"] is True
+    assert external_result["citations"]
+
+    # Failed external execution must identify the governed local fallback,
+    # not the configured external provider.
+    def failing_handler(req):
+        raise RuntimeError("provider failure")
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(failing_handler),
+    )
+
+    fallback_result = main.ai_ask(req)
+
+    assert fallback_result["provider"] == LOCAL_PROVIDER
+    assert fallback_result["external_llm_used"] is False
+    assert (
+        fallback_result["external_llm_fallback_reason"]
+        == "external_llm_provider_error"
+    )
+    assert fallback_result["canonical_content"] is False
+    assert fallback_result["grounded"] is True
+    assert fallback_result["citations"]
+
+    # Provider failure detail must remain isolated from the governed result.
+    assert "provider failure" not in str(fallback_result)
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
