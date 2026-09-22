@@ -127,6 +127,42 @@ def test_runtime_ai_path_provider_failure_preserves_governed_local_fallback(
     assert "provider detail must not escape" not in str(result)
 
 
+# Gate 13.3 — runtime timeout/fallback assurance.
+def test_runtime_ai_path_timeout_preserves_governed_local_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    def handler(req):
+        raise TimeoutError()
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(handler),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+    result = main.ai_ask(req)
+
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["external_llm_used"] is False
+    assert (
+        result["external_llm_fallback_reason"]
+        == "external_llm_timeout"
+    )
+    assert result["canonical_content"] is False
+    assert result["grounded"] is True
+    assert result["citations"]
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
