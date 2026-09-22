@@ -241,6 +241,42 @@ def test_runtime_ai_path_empty_response_preserves_governed_local_fallback(
     assert result["citations"]
 
 
+# Gate 13.6 — runtime successful grounded external-response assurance.
+def test_runtime_ai_path_accepts_grounded_external_response(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    external_answer = "Governed external synthesis."
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(
+            lambda req: ExternalSynthesisResponse(
+                answer=external_answer,
+                grounded=True,
+            )
+        ),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+    result = main.ai_ask(req)
+
+    assert result["provider"] == "MOCK"
+    assert result["external_llm_used"] is True
+    assert result["external_llm_fallback_reason"] is None
+    assert result["answer"] == external_answer
+    assert result["canonical_content"] is False
+    assert result["grounded"] is True
+    assert result["citations"]
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
