@@ -558,6 +558,66 @@ def test_runtime_external_failure_modes_converge_on_governed_local_fallback(
         assert "Unsupported external synthesis." not in str(result), case_name
 
 
+# Gate 13.12 — final Stage 13 governed external-runtime closure assurance.
+def test_runtime_governed_external_execution_closure_contract(monkeypatch):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    seen = {}
+
+    external_answer = "Governed external synthesis."
+
+    def handler(req):
+        seen["request"] = req
+        return ExternalSynthesisResponse(
+            answer=external_answer,
+            grounded=True,
+        )
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+            "NS_LLM_TIMEOUT_SECONDS": "11",
+        }),
+        MockExternalProvider(handler),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+
+    result = main.ai_ask(req)
+
+    # Successful external execution is explicit and correctly attributed.
+    assert result["provider"] == "MOCK"
+    assert result["external_llm_used"] is True
+    assert result["external_llm_fallback_reason"] is None
+    assert result["answer"] == external_answer
+
+    # North Star governance remains authoritative.
+    assert result["canonical_content"] is False
+    assert result["grounded"] is True
+    assert result["citations"]
+
+    # The external provider receives only the bounded governed request.
+    assert "request" in seen
+    external_request = seen["request"]
+
+    assert external_request.question == req.question
+    assert external_request.answer_class == result["answer_class"]
+    assert external_request.timeout_seconds == 11
+    assert external_request.evidence
+    assert len(external_request.evidence) <= req.max_evidence
+
+    # Final trust-boundary assurance:
+    # generated wording does not become canonical authority.
+    assert result["canonical_content"] is not True
+    assert result["provider"] != LOCAL_PROVIDER
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
