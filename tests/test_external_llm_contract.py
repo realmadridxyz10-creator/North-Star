@@ -203,6 +203,44 @@ def test_runtime_ai_path_ungrounded_response_preserves_governed_local_fallback(
     assert "Unsupported external answer" not in str(result)
 
 
+# Gate 13.5 — runtime empty-response/fallback assurance.
+def test_runtime_ai_path_empty_response_preserves_governed_local_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("NS_LLM_MODE", "external")
+
+    from app import main
+
+    main.EXTERNAL_LLM_ADAPTER = ProviderNeutralLLMAdapter(
+        load_llm_config({
+            "NS_LLM_MODE": "external",
+            "NS_LLM_PROVIDER": "MOCK",
+        }),
+        MockExternalProvider(
+            lambda req: ExternalSynthesisResponse(
+                answer="   ",
+                grounded=True,
+            )
+        ),
+    )
+
+    req = main.AIAskRequest(
+        question="Explain North Star governance",
+        max_evidence=3,
+    )
+    result = main.ai_ask(req)
+
+    assert result["provider"] == LOCAL_PROVIDER
+    assert result["external_llm_used"] is False
+    assert (
+        result["external_llm_fallback_reason"]
+        == "external_empty_answer"
+    )
+    assert result["canonical_content"] is False
+    assert result["grounded"] is True
+    assert result["citations"]
+
+
 def test_runtime_policy_attack_never_uses_external_adapter():
     from app import main
 
