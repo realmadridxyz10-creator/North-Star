@@ -21,6 +21,8 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
+        env:
+      NS_SESSION_SECRET: stage14-ci-test-session-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
