@@ -7,6 +7,7 @@ on:
       - stage-12-external-llm-r1
       - stage-12-external-llm-r2-readiness
       - stage-13-external-llm-operational-assurance
+      - stage-14-production-readiness
     paths:
       - "app/external_llm.py"
       - "app/main.py"
