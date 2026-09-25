@@ -217,7 +217,7 @@ SESSION_COOKIE='ns_session'
 SESSION_SECRET=(os.environ.get('NS_SESSION_SECRET') or '').strip()
 if not SESSION_SECRET:
     raise RuntimeError('NS_SESSION_SECRET is required')
-    DB_PATH=Path(os.environ.get('NS_DB_PATH') or (DATA/'runtime_dev.sqlite3'))
+DB_PATH=Path(os.environ.get('NS_DB_PATH') or (DATA/'runtime_dev.sqlite3'))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 PLANS={
     'preview':{'name':'Preview','price':'0.00','currency':'USD','entitlement':'preview','description':'Public orientation and selected governed content.'},
