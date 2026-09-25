@@ -1,10 +1,8 @@
 name: Stage 12 External LLM R1 Contract
 
 on:
-  workflow_dispatch:
   push:
     branches:
-      - stage-12-external-llm-r1
       - stage-12-external-llm-r2-readiness
       - stage-13-external-llm-operational-assurance
       - stage-14-production-readiness
@@ -21,7 +19,7 @@ on:
 jobs:
   contract:
     runs-on: ubuntu-latest
-        env:
+    env:
       NS_SESSION_SECRET: stage14-ci-test-session-secret
     steps:
       - uses: actions/checkout@v4
