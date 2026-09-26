@@ -41,8 +41,8 @@ def test_ns_def_011_no_empty_governed_search_sections():
 def test_ns_def_012_progress_has_one_explicit_current_meaning():
     s = source()
     assert "const progressKey='nsProgress:{module}:{code}'" in s
-    assert "savedProgress=localStorage.getItem(progressKey)" in s
-    assert "localStorage.setItem(progressKey,'opened')" in s
+    assert "savedProgress=safeStorageGet(progressKey)" in s
+    assert "safeStorageSet(progressKey,'opened')" in s
     assert "data-progress-state','opened'" in s
     # Current runtime intentionally claims only chapter-opened state; it must
     # not infer completion percentage, mastery, certification, or completion.
