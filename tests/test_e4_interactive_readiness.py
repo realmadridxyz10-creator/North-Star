@@ -34,3 +34,11 @@ def test_deployed_boundary_uat_includes_security_and_error_contracts():
     assert "Hardened response-header assurance" in UAT
     assert "Controlled error handling / method and parameter validation." in UAT
     assert "R4 HTTP/security boundary UAT" in UAT
+
+
+def test_module_route_uses_normalized_chapter_registry():
+    """Regression guard for deployed /modules/foundation HTTP 500 found in Step 3.6B."""
+    assert "CHAPTER_REGISTRY_RAW=load_json('B1_D04_chapter_route_registry.json')" in MAIN
+    assert "for module,rows in CHAPTER_REGISTRY_RAW.items()" in MAIN
+    assert "'chapter_code':row[0]" in MAIN
+    assert "chapters=[x for x in CHAPTER_REGISTRY if x['module']==module]" in MAIN
