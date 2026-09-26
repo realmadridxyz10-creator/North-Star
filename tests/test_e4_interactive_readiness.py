@@ -58,3 +58,14 @@ def test_module_chapter_grid_respects_mobile_breakpoints():
     assert '@media(max-width:900px){.journey,.module-journey{grid-template-columns:repeat(2,minmax(0,1fr))}' in MAIN
     assert '.journey,.module-journey{grid-template-columns:1fr}.searchbox' in MAIN
     assert 'style="grid-template-columns:repeat(3,1fr)"' not in MAIN
+
+
+def test_reader_storage_denial_degrades_gracefully():
+    """Regression guard for NS-UAT-185: storage denial must not break reader controls."""
+    assert 'function safeStorageGet(key)' in MAIN
+    assert 'function safeStorageSet(key,value)' in MAIN
+    assert "let fs=Number(safeStorageGet('nsFont')||100)" in MAIN
+    assert "safeStorageSet('nsFont',String(fs))" in MAIN
+    assert 'let savedProgress=safeStorageGet(progressKey)' in MAIN
+    assert "safeStorageSet(progressKey,'opened')" in MAIN
+    assert 'let fs=Number(localStorage.nsFont||100)' not in MAIN
