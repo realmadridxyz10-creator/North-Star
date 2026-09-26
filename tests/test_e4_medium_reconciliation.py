@@ -17,8 +17,8 @@ def source():
 
 def test_ns_def_003_progress_state_is_read_before_default_write():
     s = source()
-    read = "savedProgress=localStorage.getItem(progressKey)"
-    write = "localStorage.setItem(progressKey,'opened')"
+    read = "savedProgress=safeStorageGet(progressKey)"
+    write = "safeStorageSet(progressKey,'opened')"
     assert read in s and write in s
     assert s.index(read) < s.index(write)
     assert "data-progress-state','opened'" in s
