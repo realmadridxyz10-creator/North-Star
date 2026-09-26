@@ -50,7 +50,12 @@ def load_json(name):
 
 SEARCH=load_jsonl('search_records.jsonl')
 CHUNKS=load_jsonl('retrieval_chunks.jsonl')
-CHAPTER_REGISTRY=load_json('B1_D04_chapter_route_registry.json')
+CHAPTER_REGISTRY_RAW=load_json('B1_D04_chapter_route_registry.json')
+CHAPTER_REGISTRY=[
+    {'module':module,'chapter_code':row[0],'chapter_title':row[1],'start_page':row[2]}
+    for module,rows in CHAPTER_REGISTRY_RAW.items()
+    for row in rows
+]
 
 # Pre-index content by module/chapter from canonical IDs (CH-F0-KB001 etc.)
 CHAPTER_CONTENT={}
