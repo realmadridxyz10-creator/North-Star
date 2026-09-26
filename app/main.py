@@ -515,7 +515,6 @@ def module_page(module_slug:str):
     body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">North Star {escape(module)}</div><h1 style="font-family:Georgia,serif;font-size:3rem;margin:.15em 0">{escape(module)}</h1><p style="color:#c4d2dc;max-width:760px">{escape(desc)}</p></div></section><section class="section"><div class="shell"><div class="journey" style="grid-template-columns:repeat(3,1fr)">{cards}</div></div></section></main>'''
     return layout(module,body)
 
-@app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)
 def render_governed_text(text):
     """Render only list structure explicitly preserved in governed R4/B1 text.
 
@@ -541,6 +540,7 @@ def render_governed_text(text):
     flush()
     return ''.join(out)
 
+@app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)
 def chapter_page(module_slug:str,chapter_code:str):
     module=MODULE_BY_SLUG.get(module_slug.lower())
     if not module: raise HTTPException(404)
