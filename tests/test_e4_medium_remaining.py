@@ -59,7 +59,12 @@ def test_ns_def_009_runtime_declares_r4_b1_source_identity():
     assert "Governed R4/B1 digital experience" in s
 
 
-def test_ns_def_005_remains_fail_closed_until_structured_list_metadata_exists():
+def test_ns_def_005_preserves_only_evidenced_bullet_list_semantics():
     s = source()
-    # Current reader must not invent list semantics from newline-only prose.
-    assert "escape(r.get('text','')).replace(chr(10),'<br>')" in s
+    assert "def render_governed_text(text):" in s
+    assert "line.startswith(('','•'))" in s
+    assert "out.append('<ul>'" in s
+    assert "f'<li>{escape(x)}</li>'" in s
+    assert "render_governed_text(r.get('text',''))" in s
+    # Fail closed: do not infer ordered-list semantics from ambiguous numbering.
+    assert "<ol>" not in s
