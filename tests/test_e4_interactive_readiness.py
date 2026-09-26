@@ -19,7 +19,7 @@ def test_interactive_target_is_non_production_uat():
 def test_reader_has_stable_deep_link_and_progress_surfaces():
     assert "def normalize_route(r):" in MAIN
     assert "id=\"kb-{i:03d}\"" in MAIN
-    assert "savedProgress=localStorage.getItem(progressKey)" in MAIN
+    assert "savedProgress=safeStorageGet(progressKey)" in MAIN
     assert "data-progress-state','opened'" in MAIN
 
 
