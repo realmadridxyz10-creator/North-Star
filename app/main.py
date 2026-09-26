@@ -291,7 +291,11 @@ async def baseline_security_headers(request:Request,call_next):
     response.headers.setdefault('X-Frame-Options','DENY')
     response.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
     response.headers.setdefault('Permissions-Policy','camera=(), microphone=(), geolocation=()')
-    response.headers.setdefault('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+    response.headers.setdefault('Strict-Transport-Security','max-age=31536000; includeSubDomains')
+    response.headers.setdefault('Cross-Origin-Opener-Policy','same-origin')
+    response.headers.setdefault('Cross-Origin-Resource-Policy','same-origin')
+    response.headers.setdefault('X-Permitted-Cross-Domain-Policies','none')
+    response.headers.setdefault('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests")
     return response
 
 @app.get('/api/health')
