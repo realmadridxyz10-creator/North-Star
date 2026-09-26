@@ -5,6 +5,9 @@ from html import escape
 import json, re, os, sqlite3, time, secrets, hmac, hashlib, base64, uuid
 from urllib.parse import quote_plus
 from pydantic import BaseModel, Field
+from app.external_llm import ProviderNeutralLLMAdapter, load_llm_config, safe_external_synthesis
+from app.openai_transport import OpenAIResponsesTransport, stdlib_http_post
+from app.groq_transport import GroqChatTransport
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'data'
@@ -47,7 +50,12 @@ def load_json(name):
 
 SEARCH=load_jsonl('search_records.jsonl')
 CHUNKS=load_jsonl('retrieval_chunks.jsonl')
-CHAPTER_REGISTRY=load_json('B1_D04_chapter_route_registry.json')
+CHAPTER_REGISTRY_RAW=load_json('B1_D04_chapter_route_registry.json')
+CHAPTER_REGISTRY=[
+    {'module':module,'chapter_code':row[0],'chapter_title':row[1],'start_page':row[2]}
+    for module,rows in CHAPTER_REGISTRY_RAW.items()
+    for row in rows
+]
 
 # Pre-index content by module/chapter from canonical IDs (CH-F0-KB001 etc.)
 CHAPTER_CONTENT={}
@@ -135,6 +143,29 @@ def build_compass(canonical_id=None,dimension=None,module=None,chapter=None,limi
 
 # DEV-004: grounded AI runtime. Provider-neutral contract; local deterministic evidence composer.
 AI_PROVIDER='LOCAL_EVIDENCE'
+
+
+def build_external_llm_adapter():
+    config=load_llm_config()
+    if not config.external_requested:
+        return ProviderNeutralLLMAdapter(config)
+    provider=config.provider.upper()
+    if provider=='OPENAI':
+        api_key=(os.environ.get('OPENAI_API_KEY') or '').strip()
+        if not api_key or not config.model:
+            return ProviderNeutralLLMAdapter(config)
+        transport=OpenAIResponsesTransport(api_key,config.model,stdlib_http_post)
+        return ProviderNeutralLLMAdapter(config,transport)
+    if provider=='GROQ':
+        api_key=(os.environ.get('GROQ_API_KEY') or '').strip()
+        if not api_key or not config.model:
+            return ProviderNeutralLLMAdapter(config)
+        transport=GroqChatTransport(api_key,config.model,stdlib_http_post)
+        return ProviderNeutralLLMAdapter(config,transport)
+    return ProviderNeutralLLMAdapter(config)
+
+
+EXTERNAL_LLM_ADAPTER=build_external_llm_adapter()
 CHUNK_BY_ID={c.get('chunk_id'):c for c in CHUNKS if c.get('chunk_id')}
 
 def tokenize(q):
@@ -188,8 +219,11 @@ class AIAskRequest(BaseModel):
 IDENTITY_PROVIDER='LOCAL_OIDC_SIMULATOR'
 PAYMENT_PROVIDER='PAYPAL_SIMULATOR'
 SESSION_COOKIE='ns_session'
-SESSION_SECRET=os.environ.get('NS_SESSION_SECRET') or secrets.token_hex(32)
-DB_PATH=DATA/'runtime_dev.sqlite3'
+SESSION_SECRET=(os.environ.get('NS_SESSION_SECRET') or '').strip()
+if not SESSION_SECRET:
+    raise RuntimeError('NS_SESSION_SECRET is required')
+DB_PATH=Path(os.environ.get('NS_DB_PATH') or (DATA/'runtime_dev.sqlite3'))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 PLANS={
     'preview':{'name':'Preview','price':'0.00','currency':'USD','entitlement':'preview','description':'Public orientation and selected governed content.'},
     'module':{'name':'Single Module','price':'29.00','currency':'USD','entitlement':'module','description':'One North Star level/module entitlement.'},
@@ -262,7 +296,11 @@ async def baseline_security_headers(request:Request,call_next):
     response.headers.setdefault('X-Frame-Options','DENY')
     response.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
     response.headers.setdefault('Permissions-Policy','camera=(), microphone=(), geolocation=()')
-    response.headers.setdefault('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+    response.headers.setdefault('Strict-Transport-Security','max-age=31536000; includeSubDomains')
+    response.headers.setdefault('Cross-Origin-Opener-Policy','same-origin')
+    response.headers.setdefault('Cross-Origin-Resource-Policy','same-origin')
+    response.headers.setdefault('X-Permitted-Cross-Domain-Policies','none')
+    response.headers.setdefault('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests")
     return response
 
 @app.get('/api/health')
@@ -285,21 +323,24 @@ def api_compass(canonical_id:str|None=None,dimension:str|None=None,module:str|No
 
 @app.get('/api/ai/status')
 def ai_status():
+    adapter_status=EXTERNAL_LLM_ADAPTER.status()
     return {'release':RELEASE,'provider':AI_PROVIDER,'mode':'deterministic_grounded_evidence_composer','retrieval_chunks':len(CHUNKS),'canonical_authority':'R4/B1',
             'answer_classes':['canonical_navigation','grounded_explanation','grounded_comparison','decision_support','insufficient_evidence'],
-            'live_external_model':False,'production_authorized':False}
+            'external_llm':adapter_status,'live_external_model':adapter_status['live_external_model'],'production_authorized':False}
 
 @app.post('/api/ai/ask')
 def ai_ask(req:AIAskRequest):
     cls=classify_question(req.question)
     if cls=='policy_attack':
-        return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':'insufficient_evidence','answer':'I cannot override North Star governance, reveal hidden instructions, or treat generated wording as canonical content.','citations':[],'grounded':False,'canonical_content':False,'notice':'AI-generated wording is not canonical North Star content.'}
+        return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':'insufficient_evidence','answer':'I cannot override North Star governance, reveal hidden instructions, or treat generated wording as canonical content.','citations':[],'grounded':False,'canonical_content':False,'external_llm_used':False,'notice':'AI-generated wording is not canonical North Star content.'}
     evidence=retrieve_evidence(req.question,req.max_evidence)
     if not evidence:
         cls='insufficient_evidence'
-    ans=compose_grounded_answer(req.question,cls,evidence)
-    return {'release':RELEASE,'provider':AI_PROVIDER,'answer_class':cls,'answer':ans,'citations':[citation_from_chunk(c) for c in evidence],
-            'grounded':bool(evidence),'canonical_content':False,'notice':'AI-generated wording is not canonical North Star content. Canonical authority remains R4/B1.'}
+    external=safe_external_synthesis(EXTERNAL_LLM_ADAPTER,req.question,cls,evidence) if EXTERNAL_LLM_ADAPTER.config.external_requested else {'used_external':False,'answer':None,'provider':AI_PROVIDER,'fallback_reason':None}
+    ans=external['answer'] if external['used_external'] else compose_grounded_answer(req.question,cls,evidence)
+    return {'release':RELEASE,'provider':external['provider'],'answer_class':cls,'answer':ans,'citations':[citation_from_chunk(c) for c in evidence],
+            'grounded':bool(evidence),'canonical_content':False,'external_llm_used':external['used_external'],'external_llm_fallback_reason':external['fallback_reason'],
+            'notice':'AI-generated wording is not canonical North Star content. Canonical authority remains R4/B1.'}
 
 @app.get('/api/auth/status')
 def auth_status(request:Request):
@@ -399,9 +440,9 @@ def normalize_route(r):
 
 CSS='''
 :root{--navy:#071b2b;--navy2:#0d2a3d;--gold:#c7a45a;--ink:#14202a;--muted:#657784;--paper:#f7f4ed;--line:#d8d4c9;--white:#fff}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink);background:#fbfaf6;line-height:1.55}a{color:#8b651c}.skip{position:absolute;left:-999px}.skip:focus{left:12px;top:12px;background:#fff;padding:10px;z-index:99}.top{background:var(--navy);color:#fff;position:sticky;top:0;z-index:20;border-bottom:1px solid #294255}.top .shell{height:66px;display:flex;align-items:center;justify-content:space-between}.brand{font-family:Georgia,serif;letter-spacing:.18em;font-weight:700;color:#fff;text-decoration:none}.brand span{color:var(--gold)}nav a{color:#d9e2e8;text-decoration:none;margin-left:22px;font-size:.92rem}.shell{max-width:1180px;margin:auto;padding:0 28px}.hero{background:radial-gradient(circle at 80% 15%,#173f59 0,transparent 28%),linear-gradient(145deg,var(--navy),#0a2538);color:#fff;padding:78px 0 72px}.eyebrow{text-transform:uppercase;letter-spacing:.18em;color:var(--gold);font-size:.75rem;font-weight:700}.hero h1{font-family:Georgia,serif;font-size:clamp(2.6rem,6vw,5.5rem);line-height:.95;margin:.18em 0}.hero p{max-width:720px;color:#c4d2dc;font-size:1.15rem}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.btn{display:inline-block;padding:11px 17px;border-radius:4px;background:var(--gold);color:#071b2b;text-decoration:none;font-weight:700}.btn.secondary{background:transparent;color:#fff;border:1px solid #6b8190}.section{padding:58px 0}.section h2{font-family:Georgia,serif;font-size:2rem;margin:.2em 0}.lede{color:var(--muted);max-width:780px}.journey{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:28px}.card{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px;box-shadow:0 8px 28px #1020300a}.card .num{color:var(--gold);font-family:Georgia,serif;font-size:1.7rem}.card h3{margin:.25em 0;font-family:Georgia,serif}.card a{text-decoration:none;font-weight:700}.searchbox{background:#fff;border:1px solid var(--line);padding:18px;border-radius:6px;display:grid;grid-template-columns:1fr 170px 170px auto;gap:10px}.searchbox input,.searchbox select{width:100%;padding:12px;border:1px solid #c8c3b8;border-radius:4px;background:#fff}.searchbox button{border:0;border-radius:4px;background:var(--navy);color:#fff;padding:0 18px;font-weight:700}.results{margin-top:18px}.result{background:#fff;border-bottom:1px solid var(--line);padding:18px}.meta{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}.result h3{margin:.3em 0}.result h3 a{text-decoration:none}.result p{margin:.25em 0;color:#40515c}.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.tag{font-size:.72rem;border:1px solid #d5c79e;padding:3px 7px;border-radius:20px;color:#76581f}.module-hero{background:var(--navy);color:#fff;padding:42px 0}.module-grid{display:grid;grid-template-columns:280px 1fr;gap:32px}.chapter-nav{position:sticky;top:90px;align-self:start;background:#fff;border:1px solid var(--line);padding:16px}.chapter-nav a{display:block;padding:7px 5px;text-decoration:none;border-bottom:1px solid #eee}.reader{background:#fff;border:1px solid var(--line);padding:clamp(24px,5vw,58px);max-width:820px}.reader h1,.reader h2{font-family:Georgia,serif}.kb{padding:22px 0;border-top:1px solid #e6e1d7;scroll-margin-top:88px}.kb:first-of-type{border-top:0}.kb-id{font-size:.7rem;letter-spacing:.08em;color:#82909a}.reader-tools{display:flex;gap:8px;margin-bottom:24px}.reader-tools button{padding:7px 10px;border:1px solid #bbb;background:#fff;border-radius:4px}.focus .chapter-nav,.focus .top{display:none}.focus .module-grid{grid-template-columns:1fr}.focus .reader{margin:auto}.footer{background:#061622;color:#9fb0bb;padding:32px 0;margin-top:50px}.compass-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:24px 0}.dimension-card{background:#fff;border:1px solid var(--line);padding:13px;text-decoration:none;color:var(--ink);border-radius:5px}.dimension-card.active{border:2px solid var(--gold);background:#fffaf0}.dimension-card b{display:block;font-size:.75rem}.dimension-card span{font-size:.72rem;color:var(--muted)}.compass-layout{display:grid;grid-template-columns:300px 1fr;gap:28px}.compass-panel{background:var(--navy);color:#fff;padding:22px;border-radius:6px;align-self:start}.compass-list{background:#fff;border:1px solid var(--line)}.compass-item{padding:15px;border-bottom:1px solid #eee}.compass-item a{text-decoration:none;font-weight:700}.rel{font-size:.75rem;color:var(--muted);margin-top:5px}.empty{padding:28px;color:var(--muted)}.ai-shell{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px}.ai-panel{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px}.ai-panel textarea{width:100%;min-height:120px;padding:12px;border:1px solid #c8c3b8;border-radius:4px;font:inherit}.ai-answer{white-space:pre-wrap;background:#fffaf0;border-left:4px solid var(--gold);padding:18px;margin-top:18px}.citation{border-top:1px solid #eee;padding:10px 0;font-size:.86rem}.notice{font-size:.78rem;color:#657784}.account-grid{display:grid;grid-template-columns:340px 1fr;gap:28px}.account-panel{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px}.account-panel input{width:100%;padding:11px;border:1px solid #c8c3b8;border-radius:4px;margin:6px 0 12px}.plans{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.plan{border:1px solid var(--line);padding:16px;border-radius:5px}.plan .price{font-family:Georgia,serif;font-size:1.7rem}.status-pill{display:inline-block;padding:4px 9px;border-radius:20px;background:#e9f2ea;color:#285b31;font-size:.75rem;font-weight:700}.warning-pill{background:#fff1d9;color:#7a5511}
-@media(max-width:900px){.journey{grid-template-columns:repeat(2,1fr)}.searchbox{grid-template-columns:1fr 1fr}.searchbox input{grid-column:1/-1}.module-grid,.compass-layout,.ai-shell,.account-grid{grid-template-columns:1fr}.chapter-nav{position:relative;top:auto}.compass-grid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:560px){.shell{padding:0 17px}.top .shell{height:auto;min-height:62px;align-items:flex-start;padding-top:14px;padding-bottom:12px}.top nav{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.top nav a{margin-left:0;font-size:.78rem}.journey{grid-template-columns:1fr}.searchbox{grid-template-columns:1fr}.searchbox input{grid-column:auto}.compass-grid{grid-template-columns:repeat(2,1fr)}.plans{grid-template-columns:1fr}.hero{padding:55px 0}.section{padding:38px 0}.reader{padding:22px}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink);background:#fbfaf6;line-height:1.55}a{color:#8b651c}.skip{position:absolute;left:-999px}.skip:focus{left:12px;top:12px;background:#fff;padding:10px;z-index:99}.top{background:var(--navy);color:#fff;position:sticky;top:0;z-index:20;border-bottom:1px solid #294255}.top .shell{height:66px;display:flex;align-items:center;justify-content:space-between}.brand{font-family:Georgia,serif;letter-spacing:.18em;font-weight:700;color:#fff;text-decoration:none}.brand span{color:var(--gold)}nav a{color:#d9e2e8;text-decoration:none;margin-left:22px;font-size:.92rem}.shell{max-width:1180px;margin:auto;padding:0 28px}.hero{background:radial-gradient(circle at 80% 15%,#173f59 0,transparent 28%),linear-gradient(145deg,var(--navy),#0a2538);color:#fff;padding:78px 0 72px}.eyebrow{text-transform:uppercase;letter-spacing:.18em;color:var(--gold);font-size:.75rem;font-weight:700}.hero h1{font-family:Georgia,serif;font-size:clamp(2.6rem,6vw,5.5rem);line-height:.95;margin:.18em 0}.hero p{max-width:720px;color:#c4d2dc;font-size:1.15rem}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.btn{display:inline-block;padding:11px 17px;border-radius:4px;background:var(--gold);color:#071b2b;text-decoration:none;font-weight:700}.btn.secondary{background:transparent;color:#fff;border:1px solid #6b8190}.section{padding:58px 0}.section h2{font-family:Georgia,serif;font-size:2rem;margin:.2em 0}.lede{color:var(--muted);max-width:780px}.journey{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:28px}.module-journey{grid-template-columns:repeat(3,minmax(0,1fr))}.card{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px;box-shadow:0 8px 28px #1020300a}.card .num{color:var(--gold);font-family:Georgia,serif;font-size:1.7rem}.card h3{margin:.25em 0;font-family:Georgia,serif}.card a{text-decoration:none;font-weight:700}.searchbox{background:#fff;border:1px solid var(--line);padding:18px;border-radius:6px;display:grid;grid-template-columns:1fr 170px 170px auto;gap:10px}.searchbox input,.searchbox select{width:100%;padding:12px;border:1px solid #c8c3b8;border-radius:4px;background:#fff}.searchbox button{border:0;border-radius:4px;background:var(--navy);color:#fff;padding:0 18px;font-weight:700}.results{margin-top:18px}.result{background:#fff;border-bottom:1px solid var(--line);padding:18px}.meta{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}.result h3{margin:.3em 0}.result h3 a{text-decoration:none}.result p{margin:.25em 0;color:#40515c}.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.tag{font-size:.72rem;border:1px solid #d5c79e;padding:3px 7px;border-radius:20px;color:#76581f}.module-hero{background:var(--navy);color:#fff;padding:42px 0}.module-grid{display:grid;grid-template-columns:280px 1fr;gap:32px}.chapter-nav{position:sticky;top:90px;align-self:start;background:#fff;border:1px solid var(--line);padding:16px}.chapter-nav a{display:block;padding:7px 5px;text-decoration:none;border-bottom:1px solid #eee}.reader{background:#fff;border:1px solid var(--line);padding:clamp(24px,5vw,58px);max-width:820px}.reader h1,.reader h2{font-family:Georgia,serif}.kb{padding:22px 0;border-top:1px solid #e6e1d7;scroll-margin-top:88px}.kb:first-of-type{border-top:0}.kb-id{font-size:.7rem;letter-spacing:.08em;color:#82909a}.reader-tools{display:flex;gap:8px;margin-bottom:24px}.reader-tools button{padding:7px 10px;border:1px solid #bbb;background:#fff;border-radius:4px}.focus .chapter-nav,.focus .top{display:none}.focus .module-grid{grid-template-columns:1fr}.focus .reader{margin:auto}.footer{background:#061622;color:#9fb0bb;padding:32px 0;margin-top:50px}.compass-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:24px 0}.dimension-card{background:#fff;border:1px solid var(--line);padding:13px;text-decoration:none;color:var(--ink);border-radius:5px}.dimension-card.active{border:2px solid var(--gold);background:#fffaf0}.dimension-card b{display:block;font-size:.75rem}.dimension-card span{font-size:.72rem;color:var(--muted)}.compass-layout{display:grid;grid-template-columns:300px 1fr;gap:28px}.compass-panel{background:var(--navy);color:#fff;padding:22px;border-radius:6px;align-self:start}.compass-list{background:#fff;border:1px solid var(--line)}.compass-item{padding:15px;border-bottom:1px solid #eee}.compass-item a{text-decoration:none;font-weight:700}.rel{font-size:.75rem;color:var(--muted);margin-top:5px}.empty{padding:28px;color:var(--muted)}.ai-shell{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px}.ai-panel{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px}.ai-panel textarea{width:100%;min-height:120px;padding:12px;border:1px solid #c8c3b8;border-radius:4px;font:inherit}.ai-answer{white-space:pre-wrap;background:#fffaf0;border-left:4px solid var(--gold);padding:18px;margin-top:18px}.citation{border-top:1px solid #eee;padding:10px 0;font-size:.86rem}.notice{font-size:.78rem;color:#657784}.account-grid{display:grid;grid-template-columns:340px 1fr;gap:28px}.account-panel{background:#fff;border:1px solid var(--line);padding:22px;border-radius:6px}.account-panel input{width:100%;padding:11px;border:1px solid #c8c3b8;border-radius:4px;margin:6px 0 12px}.plans{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.plan{border:1px solid var(--line);padding:16px;border-radius:5px}.plan .price{font-family:Georgia,serif;font-size:1.7rem}.status-pill{display:inline-block;padding:4px 9px;border-radius:20px;background:#e9f2ea;color:#285b31;font-size:.75rem;font-weight:700}.warning-pill{background:#fff1d9;color:#7a5511}
+@media(max-width:900px){.journey,.module-journey{grid-template-columns:repeat(2,minmax(0,1fr))}.searchbox{grid-template-columns:1fr 1fr}.searchbox input{grid-column:1/-1}.module-grid,.compass-layout,.ai-shell,.account-grid{grid-template-columns:1fr}.chapter-nav{position:relative;top:auto}.compass-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:560px){.shell{padding:0 17px}.top .shell{height:auto;min-height:62px;align-items:flex-start;padding-top:14px;padding-bottom:12px}.top nav{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.top nav a{margin-left:0;font-size:.78rem}.journey,.module-journey{grid-template-columns:1fr}.searchbox{grid-template-columns:1fr}.searchbox input{grid-column:auto}.compass-grid{grid-template-columns:repeat(2,1fr)}.plans{grid-template-columns:1fr}.hero{padding:55px 0}.section{padding:38px 0}.reader{padding:22px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
 '''
 
@@ -435,7 +476,24 @@ def compass_page(canonical_id:str|None=None,dimension:str|None=None,module:str|N
 
 @app.get('/assistant',response_class=HTMLResponse)
 def assistant_page():
-    body='''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">Grounded AI</div><h1 style="font-family:Georgia,serif;margin:.2em 0">Ask North Star</h1><p style="color:#c4d2dc;max-width:780px">Ask for explanation, comparison, navigation or decision support. Answers are generated only from governed R4/B1 retrieval evidence and cite their sources.</p></div></section><section class="section"><div class="shell ai-shell"><section class="ai-panel"><label for="q"><b>Your question</b></label><textarea id="q" placeholder="Example: How should an executive think about governance and risk?"></textarea><div class="actions"><button class="btn" id="ask">Ask North Star</button></div><div id="answer" aria-live="polite"></div></section><aside class="ai-panel"><div class="eyebrow">AI governance</div><h2>Grounded, not canonical</h2><p>This assistant may explain, navigate, compare and support decisions. It may not silently rewrite North Star or present generated wording as canonical R4 content.</p><p class="notice">DEV provider: LOCAL_EVIDENCE. No external model execution is claimed in this build.</p></aside></div></section></main><script>document.getElementById('ask').onclick=async()=>{let q=document.getElementById('q').value,a=document.getElementById('answer');a.innerHTML='<p>Retrieving governed evidence…</p>';let r=await fetch('/api/ai/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question:q,max_evidence:6})});let d=await r.json();let c=(d.citations||[]).map(x=>`<div class="citation"><b>${x.canonical_id||x.chunk_id}</b> · ${x.module||''} ${x.chapter||''}<br><a href="${x.route||'#'}">Open governed source</a></div>`).join('');a.innerHTML=`<div class="ai-answer"><div class="meta">${d.answer_class} · ${d.provider}</div>${d.answer.replaceAll('\n','<br>')}</div><h3>Governed evidence</h3>${c}<p class="notice">${d.notice}</p>`}</script>'''
+    body='''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">Grounded AI</div><h1 style="font-family:Georgia,serif;margin:.2em 0">Ask North Star</h1><p style="color:#c4d2dc;max-width:780px">Ask for explanation, comparison, navigation or decision support. Answers are generated only from governed R4/B1 retrieval evidence and cite their sources.</p></div></section><section class="section"><div class="shell ai-shell"><section class="ai-panel"><label for="q"><b>Your question</b></label><textarea id="q" placeholder="Example: How should an executive think about governance and risk?"></textarea><div class="actions"><button class="btn" id="ask" type="button">Ask North Star</button></div><div id="answer" aria-live="polite"></div></section><aside class="ai-panel"><div class="eyebrow">AI governance</div><h2>Grounded, not canonical</h2><p>This assistant may explain, navigate, compare and support decisions. It may not silently rewrite North Star or present generated wording as canonical R4 content.</p><p class="notice">Provider execution is runtime-controlled. Responses remain grounded in governed R4/B1 evidence; generated wording is not canonical North Star content.</p></aside></div></section></main><script>
+document.getElementById('ask').addEventListener('click',async function(){
+    const button=this,q=document.getElementById('q').value.trim(),a=document.getElementById('answer');
+    if(!q){a.textContent='Enter a North Star question first.';return;}
+    button.disabled=true;a.innerHTML='<p>Retrieving governed evidence…</p>';
+    try{
+        const r=await fetch('/api/ai/ask',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({question:q,max_evidence:6})});
+        let d;
+        try{d=await r.json();}catch(e){throw new Error('invalid_response');}
+        if(!r.ok)throw new Error(d.detail||('request_failed_'+r.status));
+        const c=(d.citations||[]).map(x=>`<div class="citation"><b>${x.canonical_id||x.chunk_id}</b> · ${x.module||''} ${x.chapter||''}<br><a href="${x.route||'#'}">Open governed source</a></div>`).join('');
+        const answer=String(d.answer||'').split(String.fromCharCode(10)).join('<br>');
+        a.innerHTML=`<div class="ai-answer"><div class="meta">${d.answer_class||''} · ${d.provider||''}</div>${answer}</div><h3>Governed evidence</h3>${c}<p class="notice">${d.notice||''}</p>`;
+    }catch(e){
+        a.innerHTML='<div class="empty">Ask North Star could not complete this request. No answer has been accepted. Please retry only after the service status is verified.</div>';
+    }finally{button.disabled=false;}
+});
+</script>'''
     return layout('Ask North Star',body)
 
 @app.get('/account',response_class=HTMLResponse)
@@ -454,8 +512,33 @@ def module_page(module_slug:str):
     desc=next(d for n,s,d in MODULES if s==module_slug.lower())
     chapters=[x for x in CHAPTER_REGISTRY if x['module']==module]
     cards=''.join([f'<article class="card"><div class="meta">{escape(c["chapter_code"])}</div><h3>{escape(c["chapter_title"])}</h3><a href="/modules/{module_slug}/chapters/{c["chapter_code"].lower()}">Read chapter →</a></article>' for c in chapters])
-    body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">North Star {escape(module)}</div><h1 style="font-family:Georgia,serif;font-size:3rem;margin:.15em 0">{escape(module)}</h1><p style="color:#c4d2dc;max-width:760px">{escape(desc)}</p></div></section><section class="section"><div class="shell"><div class="journey" style="grid-template-columns:repeat(3,1fr)">{cards}</div></div></section></main>'''
+    body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">North Star {escape(module)}</div><h1 style="font-family:Georgia,serif;font-size:3rem;margin:.15em 0">{escape(module)}</h1><p style="color:#c4d2dc;max-width:760px">{escape(desc)}</p></div></section><section class="section"><div class="shell"><div class="journey module-journey">{cards}</div></div></section></main>'''
     return layout(module,body)
+
+def render_governed_text(text):
+    """Render only list structure explicitly preserved in governed R4/B1 text.
+
+    PDF-extraction bullet glyphs (U+F0B7/U+2022) are treated as unordered-list
+    evidence. Numbered lines are intentionally left as prose because numbering
+    can represent headings, questions, maturity levels, or inherited pagination.
+    """
+    lines=(text or '').splitlines()
+    out=[]; bullets=[]
+    def flush():
+        nonlocal bullets
+        if bullets:
+            out.append('<ul>'+''.join(f'<li>{escape(x)}</li>' for x in bullets)+'</ul>')
+            bullets=[]
+    for raw in lines:
+        line=raw.strip()
+        if line.startswith(('','•')):
+            bullets.append(line[1:].strip())
+            continue
+        flush()
+        if line:
+            out.append(f'<p>{escape(line)}</p>')
+    flush()
+    return ''.join(out)
 
 @app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)
 def chapter_page(module_slug:str,chapter_code:str):
@@ -466,7 +549,7 @@ def chapter_page(module_slug:str,chapter_code:str):
     if not meta: raise HTTPException(404)
     nav=''.join([f'<a href="/modules/{module_slug}/chapters/{c["chapter_code"].lower()}"><b>{escape(c["chapter_code"])}</b> {escape(c["chapter_title"])}</a>' for c in chapters])
     items=CHAPTER_CONTENT.get((module,code),[])
-    blocks=''.join([f'''<section class="kb" id="kb-{i:03d}"><div class="kb-id">{escape(r.get('canonical_id',''))}</div>{f'<h2>{escape(r.get("title"))}</h2>' if r.get('title') else ''}<div>{escape(r.get('text','')).replace(chr(10),'<br>')}</div><div class="tags">{''.join(f'<a class="tag" href="/compass?dimension={escape(d)}">{escape(d)}</a>' for d in r.get('dimension_tags',[]) or [])}</div></section>''' for i,r in enumerate(items,1)])
+    blocks=''.join([f'''<section class="kb" id="kb-{i:03d}" data-progress-key="nsProgress:{escape(module)}:{escape(code)}"><div class="kb-id">{escape(r.get('canonical_id',''))}</div>{f'<h2>{escape(r.get("title"))}</h2>' if r.get('title') else ''}<div>{render_governed_text(r.get('text',''))}</div><div class="tags">{''.join(f'<a class="tag" href="/compass?dimension={escape(d)}">{escape(d)}</a>' for d in r.get('dimension_tags',[]) or [])}</div></section>''' for i,r in enumerate(items,1)])
     if not blocks: blocks='<p>No governed content blocks were mapped for this chapter.</p>'
-    body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">{escape(module)} · {escape(code)}</div><h1 style="font-family:Georgia,serif;margin:.2em 0">{escape(meta['chapter_title'])}</h1><p><a style="color:#e0c47d" href="/compass?module={quote_plus(module)}&chapter={quote_plus(code)}">Open chapter in Compass →</a></p></div></section><section class="section"><div class="shell module-grid"><aside class="chapter-nav" aria-label="Chapter navigation"><b>{escape(module)} chapters</b>{nav}</aside><article class="reader" id="reader"><div class="reader-tools" aria-label="Reader controls"><button onclick="size(1)" aria-label="Increase text size">A+</button><button onclick="size(-1)" aria-label="Decrease text size">A−</button><button onclick="document.body.classList.toggle('focus')">Focus mode</button></div><div class="eyebrow">Understand → Decide → Do</div><h1>{escape(meta['chapter_title'])}</h1><p class="lede">Canonical digital reading view · {len(items)} governed knowledge blocks</p>{blocks}</article></div></section></main><script>let fs=Number(localStorage.nsFont||100);function size(d){{fs=Math.max(85,Math.min(135,fs+d*10));document.getElementById('reader').style.fontSize=fs+'%';localStorage.nsFont=fs}}document.getElementById('reader').style.fontSize=fs+'%';localStorage.setItem('nsProgress:{module}:{code}','opened')</script>'''
+    body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">{escape(module)} · {escape(code)}</div><h1 style="font-family:Georgia,serif;margin:.2em 0">{escape(meta['chapter_title'])}</h1><p><a style="color:#e0c47d" href="/compass?module={quote_plus(module)}&chapter={quote_plus(code)}">Open chapter in Compass →</a></p></div></section><section class="section"><div class="shell module-grid"><aside class="chapter-nav" aria-label="Chapter navigation"><b>{escape(module)} chapters</b>{nav}</aside><article class="reader" id="reader"><div class="reader-tools" aria-label="Reader controls"><button onclick="size(1)" aria-label="Increase text size">A+</button><button onclick="size(-1)" aria-label="Decrease text size">A−</button><button onclick="document.body.classList.toggle('focus')">Focus mode</button></div><div class="eyebrow">Understand → Decide → Do</div><h1>{escape(meta['chapter_title'])}</h1><p class="lede">Canonical digital reading view · {len(items)} governed knowledge blocks</p>{blocks}</article></div></section></main><script>function safeStorageGet(key){{try{{return window.localStorage.getItem(key)}}catch(e){{return null}}}}function safeStorageSet(key,value){{try{{window.localStorage.setItem(key,value);return true}}catch(e){{return false}}}}let fs=Number(safeStorageGet('nsFont')||100);function size(d){{fs=Math.max(85,Math.min(135,fs+d*10));document.getElementById('reader').style.fontSize=fs+'%';safeStorageSet('nsFont',String(fs))}}document.getElementById('reader').style.fontSize=fs+'%';const progressKey='nsProgress:{module}:{code}';let savedProgress=safeStorageGet(progressKey);if(savedProgress!=='opened'){{safeStorageSet(progressKey,'opened')}}document.getElementById('reader').setAttribute('data-progress-state','opened')</script>'''
     return layout(meta['chapter_title'],body)

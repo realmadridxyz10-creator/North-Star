@@ -1,0 +1,32 @@
+name: Stage 12 External LLM R1 Contract
+
+on:
+  push:
+    branches:
+      - stage-12-external-llm-r2-readiness
+      - stage-13-external-llm-operational-assurance
+      - stage-14-production-readiness
+    paths:
+      - "app/external_llm.py"
+      - "app/main.py"
+      - "app/openai_transport.py"
+      - "app/groq_transport.py"
+      - "tests/test_openai_transport.py"
+      - "tests/test_groq_transport.py"
+      - "tests/test_external_llm_contract.py"
+      - ".github/workflows/stage12-external-llm-contract.yml"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    env:
+      NS_SESSION_SECRET: stage14-ci-test-session-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime and test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Execute provider-neutral fail-closed contract tests
+        run: python -m pytest -q tests/test_external_llm_contract.py tests/test_openai_transport.py tests/test_groq_transport.py
