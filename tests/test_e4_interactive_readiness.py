@@ -49,3 +49,12 @@ def test_chapter_route_is_bound_to_chapter_page_not_text_renderer():
     route="@app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)"
     assert route+"\ndef chapter_page(module_slug:str,chapter_code:str):" in MAIN
     assert route+"\ndef render_governed_text(text):" not in MAIN
+
+
+def test_module_chapter_grid_respects_mobile_breakpoints():
+    """Regression guard for NS-UAT-181 iPhone portrait/landscape card reflow."""
+    assert 'class="journey module-journey"' in MAIN
+    assert '.module-journey{grid-template-columns:repeat(3,minmax(0,1fr))}' in MAIN
+    assert '@media(max-width:900px){.journey,.module-journey{grid-template-columns:repeat(2,minmax(0,1fr))}' in MAIN
+    assert '.journey,.module-journey{grid-template-columns:1fr}.searchbox' in MAIN
+    assert 'style="grid-template-columns:repeat(3,1fr)"' not in MAIN
