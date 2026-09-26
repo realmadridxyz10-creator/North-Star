@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
       - name: Compile bootstrap entry point
         run: python -m py_compile app/main.py
       - name: Validate governed corpus
