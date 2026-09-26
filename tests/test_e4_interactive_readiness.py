@@ -42,3 +42,10 @@ def test_module_route_uses_normalized_chapter_registry():
     assert "for module,rows in CHAPTER_REGISTRY_RAW.items()" in MAIN
     assert "'chapter_code':row[0]" in MAIN
     assert "chapters=[x for x in CHAPTER_REGISTRY if x['module']==module]" in MAIN
+
+
+def test_chapter_route_is_bound_to_chapter_page_not_text_renderer():
+    """Regression guard for deployed chapter deep-link 422 found in Step 3.6B."""
+    route="@app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)"
+    assert route+"\ndef chapter_page(module_slug:str,chapter_code:str):" in MAIN
+    assert route+"\ndef render_governed_text(text):" not in MAIN
