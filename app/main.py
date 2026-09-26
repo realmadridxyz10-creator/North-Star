@@ -511,6 +511,31 @@ def module_page(module_slug:str):
     return layout(module,body)
 
 @app.get('/modules/{module_slug}/chapters/{chapter_code}',response_class=HTMLResponse)
+def render_governed_text(text):
+    """Render only list structure explicitly preserved in governed R4/B1 text.
+
+    PDF-extraction bullet glyphs (U+F0B7/U+2022) are treated as unordered-list
+    evidence. Numbered lines are intentionally left as prose because numbering
+    can represent headings, questions, maturity levels, or inherited pagination.
+    """
+    lines=(text or '').splitlines()
+    out=[]; bullets=[]
+    def flush():
+        nonlocal bullets
+        if bullets:
+            out.append('<ul>'+''.join(f'<li>{escape(x)}</li>' for x in bullets)+'</ul>')
+            bullets=[]
+    for raw in lines:
+        line=raw.strip()
+        if line.startswith(('','•')):
+            bullets.append(line[1:].strip())
+            continue
+        flush()
+        if line:
+            out.append(f'<p>{escape(line)}</p>')
+    flush()
+    return ''.join(out)
+
 def chapter_page(module_slug:str,chapter_code:str):
     module=MODULE_BY_SLUG.get(module_slug.lower())
     if not module: raise HTTPException(404)
@@ -519,7 +544,7 @@ def chapter_page(module_slug:str,chapter_code:str):
     if not meta: raise HTTPException(404)
     nav=''.join([f'<a href="/modules/{module_slug}/chapters/{c["chapter_code"].lower()}"><b>{escape(c["chapter_code"])}</b> {escape(c["chapter_title"])}</a>' for c in chapters])
     items=CHAPTER_CONTENT.get((module,code),[])
-    blocks=''.join([f'''<section class="kb" id="kb-{i:03d}" data-progress-key="nsProgress:{escape(module)}:{escape(code)}"><div class="kb-id">{escape(r.get('canonical_id',''))}</div>{f'<h2>{escape(r.get("title"))}</h2>' if r.get('title') else ''}<div>{escape(r.get('text','')).replace(chr(10),'<br>')}</div><div class="tags">{''.join(f'<a class="tag" href="/compass?dimension={escape(d)}">{escape(d)}</a>' for d in r.get('dimension_tags',[]) or [])}</div></section>''' for i,r in enumerate(items,1)])
+    blocks=''.join([f'''<section class="kb" id="kb-{i:03d}" data-progress-key="nsProgress:{escape(module)}:{escape(code)}"><div class="kb-id">{escape(r.get('canonical_id',''))}</div>{f'<h2>{escape(r.get("title"))}</h2>' if r.get('title') else ''}<div>{render_governed_text(r.get('text',''))}</div><div class="tags">{''.join(f'<a class="tag" href="/compass?dimension={escape(d)}">{escape(d)}</a>' for d in r.get('dimension_tags',[]) or [])}</div></section>''' for i,r in enumerate(items,1)])
     if not blocks: blocks='<p>No governed content blocks were mapped for this chapter.</p>'
     body=f'''<main id="main"><section class="module-hero"><div class="shell"><div class="eyebrow">{escape(module)} · {escape(code)}</div><h1 style="font-family:Georgia,serif;margin:.2em 0">{escape(meta['chapter_title'])}</h1><p><a style="color:#e0c47d" href="/compass?module={quote_plus(module)}&chapter={quote_plus(code)}">Open chapter in Compass →</a></p></div></section><section class="section"><div class="shell module-grid"><aside class="chapter-nav" aria-label="Chapter navigation"><b>{escape(module)} chapters</b>{nav}</aside><article class="reader" id="reader"><div class="reader-tools" aria-label="Reader controls"><button onclick="size(1)" aria-label="Increase text size">A+</button><button onclick="size(-1)" aria-label="Decrease text size">A−</button><button onclick="document.body.classList.toggle('focus')">Focus mode</button></div><div class="eyebrow">Understand → Decide → Do</div><h1>{escape(meta['chapter_title'])}</h1><p class="lede">Canonical digital reading view · {len(items)} governed knowledge blocks</p>{blocks}</article></div></section></main><script>let fs=Number(localStorage.nsFont||100);function size(d){{fs=Math.max(85,Math.min(135,fs+d*10));document.getElementById('reader').style.fontSize=fs+'%';localStorage.nsFont=fs}}document.getElementById('reader').style.fontSize=fs+'%';const progressKey='nsProgress:{module}:{code}';let savedProgress=localStorage.getItem(progressKey);if(savedProgress==='opened'){{document.getElementById('reader').setAttribute('data-progress-state','opened')}}else{{localStorage.setItem(progressKey,'opened');savedProgress='opened';document.getElementById('reader').setAttribute('data-progress-state','opened')}}</script>'''
     return layout(meta['chapter_title'],body)
